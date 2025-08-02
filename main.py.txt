@@ -1,0 +1,128 @@
+import requests
+import os
+from flask import Flask, request
+from twilio.twiml.messaging_response import MessagingResponse
+from openai import OpenAI
+
+# Cliente OpenAI
+client = OpenAI(api_key=os.environ['OPENAI_API_KEY'])
+
+app = Flask(__name__)
+
+@app.route("/", methods=["GET"])
+def home():
+    return "🚀 Bot activo y esperando mensajes desde Twilio"
+
+@app.route("/whatsapp", methods=["POST"])
+def whatsapp_reply():
+    incoming_msg = request.values.get("Body", "").strip()
+    from_number = request.values.get("From", "")
+
+    def detectar_columna_pais(numero):
+        if numero.startswith("whatsapp:+591"):
+            return "Inscripción Bolivia"
+        elif numero.startswith("whatsapp:+54"):
+            return "Inscripción Argentina"
+        elif numero.startswith("whatsapp:+56"):
+            return "Inscripción Chile"
+        elif numero.startswith("whatsapp:+57"):
+            return "Inscripción Colombia"
+        elif numero.startswith("whatsapp:+506"):
+            return "Inscripción Costa Rica"
+        elif numero.startswith("whatsapp:+52"):
+            return "Valor Inscripción México"
+        elif numero.startswith("whatsapp:+595"):
+            return "Valor Inscripción Paraguay"
+        elif numero.startswith("whatsapp:+51"):
+            return "Valor Inscripción Perú"
+        elif numero.startswith("whatsapp:+598"):
+            return "Valor Inscripción Uruguay"
+        else:
+            return "Inscripción Resto Países"
+
+    def detectar_columna_por_mensaje(texto):
+        texto = texto.lower()
+        if "argentina" in texto:
+            return "Inscripción Argentina"
+        elif "bolivia" in texto:
+            return "Inscripción Bolivia"
+        elif "chile" in texto:
+            return "Inscripción Chile"
+        elif "colombia" in texto:
+            return "Inscripción Colombia"
+        elif "costa rica" in texto:
+            return "Inscripción Costa Rica"
+        elif "méxico" in texto or "mexico" in texto:
+            return "Valor Inscripción México"
+        elif "paraguay" in texto:
+            return "Valor Inscripción Paraguay"
+        elif "perú" in texto or "peru" in texto:
+            return "Valor Inscripción Perú"
+        elif "uruguay" in texto:
+            return "Valor Inscripción Uruguay"
+        elif any(p in texto for p in ["eeuu", "ee.uu", "panamá", "ecuador", "puerto rico", "canadá", "honduras", "guatemala", "venezuela", "rd", "república dominicana"]):
+            return "Inscripción Resto Países"
+        else:
+            return None
+
+    columna_detectada = detectar_columna_pais(from_number)
+    columna_en_mensaje = detectar_columna_por_mensaje(incoming_msg)
+    columna_pais = columna_en_mensaje if columna_en_mensaje else columna_detectada
+
+    sheet_url = "https://api.sheetbest.com/sheets/c38f74e3-80be-4898-af8b-b44389ef6a91"
+    response = requests.get(sheet_url)
+    cursos = response.json()
+
+    if not cursos:
+        respuesta_final = "No se encontró información de cursos disponibles en este momento."
+    else:
+        curso = cursos[0]
+        nombre = curso.get("Curso", "")
+        fecha = curso.get("Fecha de Inicio", "")
+        duracion = curso.get("Duración", "")
+        horario = curso.get("Horarios", "")
+        profesor = curso.get("Profesor", "")
+        precio = curso.get(columna_pais, "Consulta por el valor en tu país.")
+
+        if incoming_msg.lower().startswith("audio") or "audio" in incoming_msg.lower():
+            respuesta_final = "Gracias por tu mensaje, pero no puedo escuchar audios. Por favor, escribe tu consulta en texto 📝"
+        else:
+            prompt_base = f"""
+Una persona interesada preguntó por un curso, y quiere conocer detalles.
+
+Curso vigente:
+📚 Curso: {nombre}
+📅 Inicio: {fecha}
+⏳ Duración: {duracion}
+🕒 Horario: {horario}
+👨‍🏫 Profesor: {profesor}
+💰 Precio según su país: {precio}
+
+IMPORTANTE: El valor de inscripción ya fue calculado para su país y debe responderse exactamente como está indicado arriba. No lo inventes ni lo calcules.
+
+Consulta del usuario: {incoming_msg}
+"""
+
+            openai_response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Eres parte del equipo académico de un instituto de capacitación deportiva. Responde con claridad, profesionalismo y cercanía. Usa siempre el precio proporcionado, sin estimar ni convertir."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt_base
+                    }
+                ]
+            )
+
+            respuesta_final = openai_response.choices[0].message.content.strip()
+
+    twilio_resp = MessagingResponse()
+    twilio_resp.message(respuesta_final)
+    return str(twilio_resp)
+
+if __name__ == "__main__":
+    print("🚀 Servidor Flask funcionando correctamente.")
+    app.run(host="0.0.0.0", port=3000)
