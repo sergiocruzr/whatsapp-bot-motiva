@@ -15,10 +15,12 @@ def home():
 
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_reply():
-    incoming_msg = request.values.get("Body", "").strip()
+    incoming_msg = request.values.get("Body", "").strip().lower()
     from_number = request.values.get("From", "")
+    print(f"📩 Mensaje recibido: {incoming_msg}")
+    print(f"📱 Número: {from_number}")
 
-    # Detectar país por prefijo del número
+    # Detectar país por número
     def detectar_columna_pais(numero):
         if numero.startswith("whatsapp:+591"):
             return "Inscripción Bolivia"
@@ -41,40 +43,31 @@ def whatsapp_reply():
         else:
             return "Inscripción Resto Países"
 
-    # Detectar país mencionado en el mensaje
+    # Detectar país en mensaje de texto
     def detectar_columna_por_mensaje(texto):
-        texto = texto.lower()
-        if "argentina" in texto:
-            return "Inscripción Argentina"
-        elif "bolivia" in texto:
-            return "Inscripción Bolivia"
-        elif "chile" in texto:
-            return "Inscripción Chile"
-        elif "colombia" in texto:
-            return "Inscripción Colombia"
-        elif "costa rica" in texto:
-            return "Inscripción Costa Rica"
-        elif "méxico" in texto or "mexico" in texto:
-            return "Valor Inscripción México"
-        elif "paraguay" in texto:
-            return "Valor Inscripción Paraguay"
-        elif "perú" in texto or "peru" in texto:
-            return "Valor Inscripción Perú"
-        elif "uruguay" in texto:
-            return "Valor Inscripción Uruguay"
-        elif any(p in texto for p in [
-            "eeuu", "ee.uu", "panamá", "ecuador", "puerto rico", "canadá",
-            "honduras", "guatemala", "venezuela", "rd", "república dominicana"
-        ]):
-            return "Inscripción Resto Países"
-        else:
-            return None
+        paises = {
+            "argentina": "Inscripción Argentina",
+            "bolivia": "Inscripción Bolivia",
+            "chile": "Inscripción Chile",
+            "colombia": "Inscripción Colombia",
+            "costa rica": "Inscripción Costa Rica",
+            "méxico": "Valor Inscripción México",
+            "mexico": "Valor Inscripción México",
+            "paraguay": "Valor Inscripción Paraguay",
+            "perú": "Valor Inscripción Perú",
+            "peru": "Valor Inscripción Perú",
+            "uruguay": "Valor Inscripción Uruguay",
+        }
+        for clave, columna in paises.items():
+            if clave in texto:
+                return columna
+        return None
 
     columna_detectada = detectar_columna_pais(from_number)
     columna_en_mensaje = detectar_columna_por_mensaje(incoming_msg)
     columna_pais = columna_en_mensaje if columna_en_mensaje else columna_detectada
 
-    # Leer datos desde Sheet
+    # Leer curso desde Google Sheets (vía Sheet.best)
     sheet_url = "https://api.sheetbest.com/sheets/c38f74e3-80be-4898-af8b-b44389ef6a91"
     response = requests.get(sheet_url)
     cursos = response.json()
@@ -82,38 +75,29 @@ def whatsapp_reply():
     if not cursos:
         respuesta_final = "No se encontró información de cursos disponibles en este momento."
     else:
-        curso = cursos[0]
-        nombre = curso.get("Curso", "")
-        fecha = curso.get("Fecha de Inicio", "")
-        duracion = curso.get("Duración", "")
-        horario = curso.get("Horarios", "")
-        profesor = curso.get("Profesor", "")
+        curso = cursos[0]  # Curso más reciente o vigente
         texto_principal = curso.get("Texto Principal", "")
         link_pdf = curso.get("Link PDF", "")
         precio = curso.get(columna_pais, "Consulta por el valor en tu país.")
 
-        # Palabras clave para detectar interés general
-        claves_info = ["curso", "información", "info", "detalles", "brochure", "pdf"]
-
-        if any(clave in incoming_msg.lower() for clave in claves_info):
-            respuesta_final = f"{texto_principal}\n\n📄 PDF informativo del curso:\n{link_pdf}"
-        elif "audio" in incoming_msg.lower():
-            respuesta_final = "Gracias por tu mensaje 😊. Estoy conectado desde una computadora y no puedo escuchar audios. ¿Podrías escribirme tu consulta por texto?"
+        # Si envió un audio o lo menciona
+        if "audio" in incoming_msg:
+            respuesta_final = "Gracias por tu mensaje 🙌, pero estoy conectado desde una computadora y no puedo escuchar audios. ¿Podrías escribirme tu consulta por texto? Estaré encantado de ayudarte 😊"
         else:
+            # Preparar prompt completo para OpenAI
             prompt_base = f"""
-Una persona interesada preguntó por un curso, y quiere conocer detalles.
+🧠 Información general del curso:
 
-Curso vigente:
-📚 Curso: {nombre}
-📅 Inicio: {fecha}
-⏳ Duración: {duracion}
-🕒 Horario: {horario}
-👨‍🏫 Profesor: {profesor}
-💰 Precio según su país: {precio}
+{texto_principal}
 
-IMPORTANTE: El valor de inscripción ya fue calculado para su país y debe responderse exactamente como está indicado arriba. No lo inventes ni lo calcules.
+📄 PDF informativo: {link_pdf}
+
+💰 Precio según país: {precio}
 
 Consulta del usuario: {incoming_msg}
+
+Responde como parte del equipo de coordinación de Motiva Educación. Usa un tono cálido, profesional y cercano. Si el usuario muestra interés en inscribirse, sugiérele contactar al coordinador al número +59162723944 o al enlace https://wa.link/tx3hj3. 
+No te identifiques como bot. Si el usuario pregunta por certificado, plataforma, pagos o modalidad, responde según las reglas internas de la institución.
 """
 
             openai_response = client.chat.completions.create(
@@ -121,7 +105,7 @@ Consulta del usuario: {incoming_msg}
                 messages=[
                     {
                         "role": "system",
-                        "content": "Eres parte del equipo académico de un instituto de capacitación deportiva. Responde con claridad, profesionalismo y calidez. Nunca digas que eres un bot. Usa el precio exacto y responde basándote en la información institucional."
+                        "content": "Eres parte del equipo académico de Motiva Educación. Responde con claridad, calidez y profesionalismo. No inventes precios ni conviertas monedas. Nunca digas que eres un bot. Usa emojis amigables cuando sea útil."
                     },
                     {
                         "role": "user",
@@ -132,6 +116,7 @@ Consulta del usuario: {incoming_msg}
 
             respuesta_final = openai_response.choices[0].message.content.strip()
 
+    # Enviar la respuesta
     twilio_resp = MessagingResponse()
     twilio_resp.message(respuesta_final)
     return str(twilio_resp)
