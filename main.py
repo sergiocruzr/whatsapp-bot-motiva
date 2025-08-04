@@ -18,6 +18,7 @@ def whatsapp_reply():
     incoming_msg = request.values.get("Body", "").strip()
     from_number = request.values.get("From", "")
 
+    # Detectar país por prefijo del número
     def detectar_columna_pais(numero):
         if numero.startswith("whatsapp:+591"):
             return "Inscripción Bolivia"
@@ -40,6 +41,7 @@ def whatsapp_reply():
         else:
             return "Inscripción Resto Países"
 
+    # Detectar país mencionado en el mensaje
     def detectar_columna_por_mensaje(texto):
         texto = texto.lower()
         if "argentina" in texto:
@@ -60,7 +62,10 @@ def whatsapp_reply():
             return "Valor Inscripción Perú"
         elif "uruguay" in texto:
             return "Valor Inscripción Uruguay"
-        elif any(p in texto for p in ["eeuu", "ee.uu", "panamá", "ecuador", "puerto rico", "canadá", "honduras", "guatemala", "venezuela", "rd", "república dominicana"]):
+        elif any(p in texto for p in [
+            "eeuu", "ee.uu", "panamá", "ecuador", "puerto rico", "canadá",
+            "honduras", "guatemala", "venezuela", "rd", "república dominicana"
+        ]):
             return "Inscripción Resto Países"
         else:
             return None
@@ -69,6 +74,7 @@ def whatsapp_reply():
     columna_en_mensaje = detectar_columna_por_mensaje(incoming_msg)
     columna_pais = columna_en_mensaje if columna_en_mensaje else columna_detectada
 
+    # Leer datos desde Sheet
     sheet_url = "https://api.sheetbest.com/sheets/c38f74e3-80be-4898-af8b-b44389ef6a91"
     response = requests.get(sheet_url)
     cursos = response.json()
@@ -82,10 +88,17 @@ def whatsapp_reply():
         duracion = curso.get("Duración", "")
         horario = curso.get("Horarios", "")
         profesor = curso.get("Profesor", "")
+        texto_principal = curso.get("Texto Principal", "")
+        link_pdf = curso.get("Link PDF", "")
         precio = curso.get(columna_pais, "Consulta por el valor en tu país.")
 
-        if incoming_msg.lower().startswith("audio") or "audio" in incoming_msg.lower():
-            respuesta_final = "Gracias por tu mensaje, pero no puedo escuchar audios. Por favor, escribe tu consulta en texto 📝"
+        # Palabras clave para detectar interés general
+        claves_info = ["curso", "información", "info", "detalles", "brochure", "pdf"]
+
+        if any(clave in incoming_msg.lower() for clave in claves_info):
+            respuesta_final = f"{texto_principal}\n\n📄 PDF informativo del curso:\n{link_pdf}"
+        elif "audio" in incoming_msg.lower():
+            respuesta_final = "Gracias por tu mensaje 😊. Estoy conectado desde una computadora y no puedo escuchar audios. ¿Podrías escribirme tu consulta por texto?"
         else:
             prompt_base = f"""
 Una persona interesada preguntó por un curso, y quiere conocer detalles.
@@ -108,7 +121,7 @@ Consulta del usuario: {incoming_msg}
                 messages=[
                     {
                         "role": "system",
-                        "content": "Eres parte del equipo académico de un instituto de capacitación deportiva. Responde con claridad, profesionalismo y cercanía. Usa siempre el precio proporcionado, sin estimar ni convertir."
+                        "content": "Eres parte del equipo académico de un instituto de capacitación deportiva. Responde con claridad, profesionalismo y calidez. Nunca digas que eres un bot. Usa el precio exacto y responde basándote en la información institucional."
                     },
                     {
                         "role": "user",
@@ -122,8 +135,8 @@ Consulta del usuario: {incoming_msg}
     twilio_resp = MessagingResponse()
     twilio_resp.message(respuesta_final)
     return str(twilio_resp)
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     print(f"🚀 Servidor Flask funcionando en el puerto {port}")
     app.run(host="0.0.0.0", port=port)
-
