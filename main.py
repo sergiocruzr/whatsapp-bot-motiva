@@ -80,12 +80,10 @@ def contiene(texto: str, palabras: list[str]) -> bool:
     return any(p in t for p in palabras)
 
 def faq_respuesta(faq_text: str, pregunta: str) -> str | None:
-    """Busca una línea del FAQ que encaje con la pregunta (heurística simple)."""
     if not faq_text:
         return None
     t = (pregunta or "").lower()
     lineas = [l.strip(" •-") for l in faq_text.splitlines() if l.strip()]
-    # Palabras clave típicas
     claves = [
         "certific", "licenc", "entren", "modal", "plataforma", "pago", "precio",
         "profes", "fecha", "horario", "pdf", "temario", "duración", "duracion"
@@ -94,7 +92,6 @@ def faq_respuesta(faq_text: str, pregunta: str) -> str | None:
         l_low = l.lower()
         if any(k in l_low for k in claves) and any(w in t for w in l_low.split()):
             return l
-    # si preguntan por "faq", devolvemos todo (corto)
     if "faq" in t:
         joined = "\n• " + "\n• ".join(lineas[:6])
         return f"Algunos puntos clave:\n{joined}"
@@ -118,7 +115,7 @@ def whatsapp_reply():
         tw.message("Ups, ahora no puedo escuchar audios 🙈 Escribime por texto y te ayudo rápido.")
         return str(tw)
 
-    # 1) Cargar curso
+    # 1) Cargar curso (vigente)
     curso = cargar_curso_vigente()
     if not curso:
         tw = MessagingResponse(); tw.message("No tengo info del curso ahora 🙏")
@@ -140,6 +137,14 @@ def whatsapp_reply():
     col_precio = col_txt or col_num
     precio = (curso.get(col_precio) or "").strip() or "Consulta por el valor en tu país."
 
+    # --- NUEVO: manejo de saludos (no mandar aún la info del curso) ---
+    if contiene(low, ["hola","holaa","buenas","buenos días","buenos dias","buenas tardes","buenas noches","qué tal","que tal","hey","ola"]):
+        # guía suave para que el usuario diga el curso
+        sugerencia = f"¿Te interesa *{nombre}* o tenés otro curso en mente?"
+        tw = MessagingResponse()
+        tw.message(f"¡Hola! 👋 ¿Sobre qué curso te paso info? {sugerencia}")
+        return str(tw)
+
     # 3) Intención: ¿De qué país son?
     if contiene(low, [
         "de qué país son","de que pais son","de qué país es","de que pais es",
@@ -155,8 +160,8 @@ def whatsapp_reply():
                    "Decime tu país y te paso precio y formas de pago locales.")
         tw = MessagingResponse(); tw.message(msg); return str(tw)
 
-    # 4) Info inicial (breve)
-    if contiene(low, ["hola","info","información","informacion","detalles","brochure","pdf","curso","quiero saber","cómo es","como es"]):
+    # 4) Info del curso (breve) — ya no incluye 'hola' como disparador
+    if contiene(low, ["info","información","informacion","detalles","brochure","pdf","curso","quiero saber","cómo es","como es"]):
         partes = []
         if texto_principal: partes.append(texto_principal)
         if link_pdf: partes.append(f"📄 PDF: {link_pdf}")
@@ -174,7 +179,7 @@ def whatsapp_reply():
         msg = f"📄 PDF: {link_pdf}" if link_pdf else "Aún no tengo el PDF listo, pero te paso la info por aquí 😉"
         tw = MessagingResponse(); tw.message(msg); return str(tw)
 
-    # 7) Fechas/horarios (resumen corto)
+    # 7) Fechas/horarios
     if contiene(low, ["fecha","fechas","calendario","horario","horarios","cuándo","cuando"]):
         resumen = []
         if fecha_inicio: resumen.append(f"📅 Inicio: {fecha_inicio}")
@@ -190,15 +195,15 @@ def whatsapp_reply():
         msg = f"¡De una! 😃 Escribile al coord.: {ASESOR_LINK} o al {ASESOR_NUM}"
         tw = MessagingResponse(); tw.message(msg); return str(tw)
 
-    # 9) FAQ (si encaja algo)
+    # 9) FAQ
     posible = faq_respuesta(faq, low)
     if posible:
         tw = MessagingResponse(); tw.message(posible)
         return str(tw)
 
-    # 10) Último recurso (corto y útil)
+    # 10) Último recurso
     tw = MessagingResponse()
-    tw.message("¿Te mando el PDF y el precio de tu país? 📄💰")
+    tw.message("¿Sobre qué curso te paso info? Si querés, te envío PDF y precio de tu país 📄💰")
     return str(tw)
 
 # ==== RUN ====
