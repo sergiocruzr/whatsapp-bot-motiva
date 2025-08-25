@@ -104,12 +104,17 @@ def home():
     return "🚀 Bot activo y esperando mensajes desde Twilio"
 @app.route("/debug/sheet", methods=["GET"])
 def debug_sheet():
-    import requests
     try:
-        r = requests.get(os.environ.get("SHEET_URL",""), timeout=12)
-        return {"status": r.status_code, "preview": r.text[:800]}, 200
+        url = os.environ.get("SHEET_URL","")
+        r = requests.get(url, timeout=12)
+        return {
+            "sheet_url_used": url,
+            "status": r.status_code,
+            "preview": r.text[:800]
+        }, 200
     except Exception as e:
-        return {"error": str(e)}, 500
+        return {"sheet_url_used": os.environ.get("SHEET_URL",""), "error": str(e)}, 500
+
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_reply():
     incoming_msg = (request.values.get("Body", "") or "").strip()
@@ -218,6 +223,7 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     print(f"🚀 Servidor Flask funcionando en el puerto {port}")
     app.run(host="0.0.0.0", port=port)
+
 
 
 
