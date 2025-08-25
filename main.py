@@ -4,7 +4,7 @@ from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 
 # ==== CONFIG ====
-SHEET_URL = "https://api.sheetbest.com/sheets/c38f74e3-80be-4898-af8b-b44389ef6a91"
+SHEET_URL = "https://docs.google.com/spreadsheets/d/1qFZvzPdZetlMEWzNzxWptYsSMroQR7P88ShyfbORVOE/edit?usp=sharing"
 ASESOR_LINK = "https://wa.link/tx3hj3"
 ASESOR_NUM = "+59162723944"
 
@@ -211,3 +211,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     print(f"🚀 Servidor Flask funcionando en el puerto {port}")
     app.run(host="0.0.0.0", port=port)
+
