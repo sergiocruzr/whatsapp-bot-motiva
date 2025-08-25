@@ -1,10 +1,20 @@
 import os
+import csv
 import requests
+from io import StringIO
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 
 # ==== CONFIG ====
-SHEET_URL = os.environ.get("SHEET_URL", "https://docs.google.com/spreadsheets/d/1qFZvzPdZetlMEWzNzxWptYsSMroQR7P88ShyfbORVOE/edit?usp=drive_link")
+SHEET_URL = os.environ.get(
+    "SHEET_URL",
+    # Por defecto queda vacío; define SHEET_URL en Railway.
+    # Ejemplo (Sheet.best – recomendado):
+    # https://api.sheetbest.com/sheets/c38f74e3-80be-4898-af8b-b44389ef6a91
+    # Ejemplo (Google CSV):
+    # https://docs.google.com/spreadsheets/d/ID/export?format=csv&gid=0
+    ""
+)
 ASESOR_LINK = "https://wa.link/tx3hj3"
 ASESOR_NUM = "+59162723944"
 
@@ -66,15 +76,6 @@ def nombre_pais_desde_col_precio(col_precio: str) -> str:
     }
     return mapa.get(col_precio, "tu país")
 
-def cargar_curso_vigente() -> dict | None:
-    try:
-        resp = requests.get(SHEET_URL, timeout=12)
-        resp.raise_for_status()
-        data = resp.json()
-        return data[0] if data else None
-    except Exception:
-        return None
-
 def contiene(texto: str, palabras: list[str]) -> bool:
     t = (texto or "").lower()
     return any(p in t for p in palabras)
@@ -97,11 +98,51 @@ def faq_respuesta(faq_text: str, pregunta: str) -> str | None:
         return f"Algunos puntos clave:\n{joined}"
     return None
 
+def cargar_curso_vigente() -> dict | None:
+    """Soporta Sheet.best (JSON) y Google Sheets export CSV."""
+    url = SHEET_URL or ""
+    try:
+        if not url:
+            print("[sheet] SHEET_URL vacío.")
+            return None
+        resp = requests.get(url, timeout=12)
+        resp.raise_for_status()
+        low = url.lower()
+
+        # 1) Sheet.best (JSON)
+        if "sheetbest.com" in low:
+            data = resp.json()
+            if isinstance(data, list) and data:
+                # devuelve la primera fila no vacía con 'Curso'
+                for row in data:
+                    if (row.get("Curso") or "").strip():
+                        return row
+                return data[0]
+            return None
+
+        # 2) Google Sheets CSV
+        if "docs.google.com/spreadsheets" in low and ("export?format=csv" in low or "output=csv" in low):
+            reader = csv.DictReader(StringIO(resp.text))
+            for row in reader:
+                if (row.get("Curso") or "").strip():
+                    return row
+            return None
+
+        # 3) URL no compatible
+        print("[sheet] URL no compatible. Usa Sheet.best (JSON) o export CSV de Google.")
+        return None
+
+    except Exception as e:
+        print(f"[sheet] Error cargando sheet: {e}")
+        return None
+
 # ==== RUTAS ====
 
 @app.route("/", methods=["GET"])
 def home():
     return "🚀 Bot activo y esperando mensajes desde Twilio"
+
+# Ruta de debug para ver qué URL se usa y la respuesta remota
 @app.route("/debug/sheet", methods=["GET"])
 def debug_sheet():
     try:
@@ -149,15 +190,14 @@ def whatsapp_reply():
     col_precio = col_txt or col_num
     precio = (curso.get(col_precio) or "").strip() or "Consulta por el valor en tu país."
 
-    # --- NUEVO: manejo de saludos (no mandar aún la info del curso) ---
+    # --- Saludos (pedir curso) ---
     if contiene(low, ["hola","holaa","buenas","buenos días","buenos dias","buenas tardes","buenas noches","qué tal","que tal","hey","ola"]):
-        # guía suave para que el usuario diga el curso
         sugerencia = f"¿Te interesa *{nombre}* o tenés otro curso en mente?"
         tw = MessagingResponse()
         tw.message(f"¡Hola! 👋 ¿Sobre qué curso te paso info? {sugerencia}")
         return str(tw)
 
-    # 3) Intención: ¿De qué país son?
+    # --- ¿De qué país son? ---
     if contiene(low, [
         "de qué país son","de que pais son","de qué país es","de que pais es",
         "de dónde son","de donde son","de dónde operan","de donde operan",
@@ -172,7 +212,7 @@ def whatsapp_reply():
                    "Decime tu país y te paso precio y formas de pago locales.")
         tw = MessagingResponse(); tw.message(msg); return str(tw)
 
-    # 4) Info del curso (breve) — ya no incluye 'hola' como disparador
+    # --- Info del curso (breve) ---
     if contiene(low, ["info","información","informacion","detalles","brochure","pdf","curso","quiero saber","cómo es","como es"]):
         partes = []
         if texto_principal: partes.append(texto_principal)
@@ -181,17 +221,17 @@ def whatsapp_reply():
         tw = MessagingResponse(); tw.message("\n\n".join(partes + ["¿Te paso pasos para inscribirte? 😉"]))
         return str(tw)
 
-    # 5) Precio directo
+    # --- Precio directo ---
     if contiene(low, ["precio","valor","inscripción","inscripcion","cuánto cuesta","cuanto cuesta"]):
         tw = MessagingResponse(); tw.message(f"💰 Precio: {precio}")
         return str(tw)
 
-    # 6) PDF directo
+    # --- PDF directo ---
     if contiene(low, ["pdf","brochure","info completa","información completa","informacion completa","archivo"]):
         msg = f"📄 PDF: {link_pdf}" if link_pdf else "Aún no tengo el PDF listo, pero te paso la info por aquí 😉"
         tw = MessagingResponse(); tw.message(msg); return str(tw)
 
-    # 7) Fechas/horarios
+    # --- Fechas/horarios (resumen) ---
     if contiene(low, ["fecha","fechas","calendario","horario","horarios","cuándo","cuando"]):
         resumen = []
         if fecha_inicio: resumen.append(f"📅 Inicio: {fecha_inicio}")
@@ -202,35 +242,25 @@ def whatsapp_reply():
         tw = MessagingResponse(); tw.message("\n".join(resumen))
         return str(tw)
 
-    # 8) Inscripción → coordinador
+    # --- Inscripción → coordinador ---
     if contiene(low, ["me quiero inscribir","quiero inscribirme","cómo me inscribo","como me inscribo","dónde pago","donde pago","quiero pagar","me interesa inscribirme"]):
         msg = f"¡De una! 😃 Escribile al coord.: {ASESOR_LINK} o al {ASESOR_NUM}"
         tw = MessagingResponse(); tw.message(msg); return str(tw)
 
-    # 9) FAQ
+    # --- FAQ ---
     posible = faq_respuesta(faq, low)
     if posible:
         tw = MessagingResponse(); tw.message(posible)
         return str(tw)
 
-    # 10) Último recurso
+    # --- Último recurso ---
     tw = MessagingResponse()
     tw.message("¿Sobre qué curso te paso info? Si querés, te envío PDF y precio de tu país 📄💰")
     return str(tw)
 
 # ==== RUN ====
 if __name__ == "__main__":
+    print("SHEET_URL =", os.environ.get("SHEET_URL", "(no definida)"))
     port = int(os.environ.get("PORT", 5000))
     print(f"🚀 Servidor Flask funcionando en el puerto {port}")
     app.run(host="0.0.0.0", port=port)
-if __name__ == "__main__":
-    print("SHEET_URL =", os.environ.get("SHEET_URL","(no definida)"))
-    port = int(os.environ.get("PORT", 5000))
-    print(f"🚀 Servidor Flask funcionando en el puerto {port}")
-    app.run(host="0.0.0.0", port=port)
-
-
-
-
-
-
