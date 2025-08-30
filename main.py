@@ -4,6 +4,7 @@ import time
 import requests
 from io import StringIO
 from flask import Flask, request, jsonify, Response
+import unicodedata
 from xml.sax.saxutils import escape as xml_escape
 
 app = Flask(__name__)
@@ -148,6 +149,34 @@ def find_course(rows, text: str):
     return None
 
 
+def _fold(s: str) -> str:
+    s = (s or "").lower()
+    nfkd = unicodedata.normalize('NFD', s)
+    return ''.join(c for c in nfkd if not unicodedata.combining(c))
+
+def find_course2(rows, text: str):
+    t = _fold(text)
+    # 1) substring directo tolerante a acentos
+    for r in rows:
+        name = (r.get("Curso") or "").strip()
+        if name and _fold(name) in t:
+            return r
+    # 2) tokens por intersección
+    import re
+    words = [w for w in re.findall(r"[A-Za-zÁÉÍÓÚáéíóúÑñ0-9]+", text) if len(w) >= 3]
+    words_fold = set(_fold(w) for w in words)
+    best_score, best_row = 0, None
+    for r in rows:
+        name = (r.get("Curso") or "")
+        name_tokens = [w for w in re.findall(r"[A-Za-zÁÉÍÓÚáéíóúÑñ0-9]+", name) if len(w) >= 3]
+        name_fold_set = set(_fold(w) for w in name_tokens)
+        score = len(words_fold & name_fold_set)
+        if score > best_score:
+            best_score, best_row = score, r
+    if best_score >= 1:
+        return best_row
+    return None
+
 def guess_country_price_column(from_number: str) -> str:
     """Determina la columna de precio según el prefijo del número E.164 (sin 'whatsapp:')."""
     # from_number viene como 'whatsapp:+5917xxxxxxx'
@@ -224,19 +253,20 @@ def first_response_for_course(row, from_number):
 
 
 def answer_faq(row, body_lower):
-    """Respuestas básicas a palabras clave usando columnas estándar."""
     out = []
-    if any(k in body_lower for k in ["precio", "costo", "vale", "inscrip"]):
+    if any(k in body_lower for k in ["precio", "costo", "vale", "valor", "cuanto", "cuánto", "inscrip"]):
         out.append("💳 *Inscripción:* indícame tu país para darte el precio exacto, o dime 'precio [país]'.")
-    if any(k in body_lower for k in ["horario", "hora"]):
+    if any(k in body_lower for k in ["horario", "horarios", "hora", "clase", "clases"]):
         if row.get("Horarios"):
             out.append(f"🕒 *Horarios:* {row['Horarios']}")
-    if any(k in body_lower for k in ["modalidad", "metodolog", "online", "virtual", "en vivo"]):
+    if any(k in body_lower for k in ["modalidad", "metodolog", "online", "virtual", "en vivo", "zoom", "meet"]):
         out.append("🎥 Modalidad *en vivo* por videoconferencia (clases síncronas).")
     faq = row.get("FAQ", "").strip()
     if faq:
         out.append(f"ℹ️ *FAQ:* {faq}")
-    return "\n\n".join(out) if out else None
+    return "
+
+".join(out) if out else None
 
 
 def detect_intent_enroll(body_lower):
@@ -284,6 +314,7 @@ def whatsapp_webhook():
     # Twilio envía application/x-www-form-urlencoded
     from_number = request.form.get("From", "")
     body = request.form.get("Body", "").strip()
+    print("[INBOUND] From=", from_number, "Body=", body)
 
     # Carga de cursos
     try:
@@ -313,7 +344,7 @@ def whatsapp_webhook():
         return build_twiml(msg)
 
     # Intento detectar curso
-    row = find_course(rows, body)
+    row = find_course2(rows, body)
 
     if row:
         # Si pregunta algo específico (precio, horarios, etc.)
@@ -321,7 +352,11 @@ def whatsapp_webhook():
         if faq_ans:
             return build_twiml(faq_ans)
         # Primera respuesta estándar
-        resp = first_response_for_course(row, from_number)
+        try:
+            resp = first_response_for_course(row, from_number)
+        except Exception as e:
+            print("[ERROR first_response_for_course]", e)
+            resp = "Puedo enviarte la info y el PDF si me confirmas el *nombre del curso*."
         return build_twiml(resp)
 
     # Si no detecto curso, ofrezco la lista
