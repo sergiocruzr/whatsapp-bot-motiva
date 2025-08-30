@@ -28,21 +28,15 @@ CACHE_SECONDS = 300  # 5 minutos
 
 # Mapeo de prefijos a columna de precios por país (E.164 sin el '+')
 COUNTRY_PRICE_COLUMN = {
-    "506": "Inscripción Costa Rica",
-    "598": "Inscripción Uruguay",
-    "595": "Inscripción Paraguay",
-    "591": "Inscripción Bolivia",
-    "598": "Inscripción Uruguay",
-    "598": "Inscripción Uruguay",
-    "598": "Inscripción Uruguay",
-    "598": "Inscripción Uruguay",
-    "598": "Inscripción Uruguay",
-    "598": "Inscripción Uruguay",
-    "54":  "Inscripción Argentina",
-    "56":  "Inscripción Chile",
-    "57":  "Inscripción Colombia",
-    "52":  "Inscripción México",
-    "51":  "Inscripción Perú",
+    "506": "Inscripción Costa Rica",  # CR
+    "598": "Inscripción Uruguay",    # UY
+    "595": "Inscripción Paraguay",   # PY
+    "591": "Inscripción Bolivia",    # BO
+    "54":  "Inscripción Argentina",  # AR
+    "56":  "Inscripción Chile",      # CL
+    "57":  "Inscripción Colombia",   # CO
+    "52":  "Inscripción México",     # MX
+    "51":  "Inscripción Perú",       # PE
 }
 # Nota: usamos el más largo que calce. Si no hay match, usamos "Inscripción Resto Países".
 
@@ -68,6 +62,11 @@ EXPECTED_HEADERS = [
     "FAQ",
 ]
 
+# Sinónimos permitidos en encabezados (por si la hoja tiene nombres alternativos)
+HEADER_SYNONYMS = {
+    "Valor Inscripción Uruguay": "Inscripción Uruguay",
+}
+
 
 def fetch_sheet_rows(force: bool = False):
     """Descarga el CSV y lo cachea como lista de diccionarios."""
@@ -82,22 +81,31 @@ def fetch_sheet_rows(force: bool = False):
 
     resp = requests.get(SHEET_CSV_URL, timeout=15)
     resp.raise_for_status()
+    # Fuerza decodificación correcta en UTF-8 para tildes/acentos
+    resp.encoding = "utf-8"
 
     content = resp.text
     csv_io = StringIO(content)
     reader = csv.DictReader(csv_io)
 
     # Validación de encabezados
-    headers = reader.fieldnames or []
-    if [h.strip() for h in headers] != EXPECTED_HEADERS:
+    raw_headers = reader.fieldnames or []
+    # Normaliza espacios, BOM y aplica sinónimos
+    headers = [ (h or "").strip().lstrip('﻿') for h in raw_headers ]
+    headers = [ HEADER_SYNONYMS.get(h, h) for h in headers ]
+    if headers != EXPECTED_HEADERS:
         raise ValueError(
-            f"Encabezados no coinciden. Esperado: {EXPECTED_HEADERS}. Recibido: {headers}"
+            f"Encabezados no coinciden. Esperado: {EXPECTED_HEADERS}. Recibido: {raw_headers}"
         )
 
     rows = []
     for row in reader:
         # Normaliza espacios
-        clean = {k: (v or "").strip() for k, v in row.items()}
+        clean = {}
+        for k, v in row.items():
+            nk = (k or "").strip().lstrip('﻿')
+            nk = HEADER_SYNONYMS.get(nk, nk)
+            clean[nk] = (v or "").strip()
         # Solo filas con nombre de curso
         if clean.get("Curso"):
             rows.append(clean)
@@ -265,7 +273,7 @@ def sheet_preview():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-@app.post("/sheet_refresh")
+@app.route("/sheet_refresh", methods=["GET", "POST"])
 def sheet_refresh():
     fetch_sheet_rows(force=True)
     return jsonify({"ok": True, "refreshed": True, "count": len(_sheet_cache["rows"])})
