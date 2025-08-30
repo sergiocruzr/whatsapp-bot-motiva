@@ -1,29 +1,19 @@
-import os
-import time
-import csv
-import re
-import requests
-import unicodedata
-from io import StringIO
 from flask import Flask, request, jsonify, Response
+import os, time, csv, re, requests, unicodedata
+from io import StringIO
 from xml.sax.saxutils import escape as xml_escape
 
 app = Flask(__name__)
 
-# =========================
-# Config / Entorno
-# =========================
+# ===== Config =====
 BRAND_NAME = os.getenv("BRAND_NAME", "Motiva Educación")
 SHEET_CSV_URL = os.getenv("SHEET_CSV_URL")
-
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER")  # ej: whatsapp:+14155238886
-ADMIN_FORWARD_NUMBER = os.getenv("ADMIN_FORWARD_NUMBER")      # ej: whatsapp:+5917XXXXXXX
+TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER")  # whatsapp:+14155238886
+ADMIN_FORWARD_NUMBER = os.getenv("ADMIN_FORWARD_NUMBER")      # whatsapp:+5917XXXXXXX
 
-# =========================
-# Cache de Sheet
-# =========================
+# ===== Cache =====
 _cache = {"rows": [], "t": 0.0}
 CACHE_SECONDS = 300
 
@@ -37,37 +27,29 @@ HEADER_SYNONYMS = {
     "Valor Inscripción Uruguay": "Inscripción Uruguay",
 }
 
-# Mapa de prefijos telefónicos a columna de precio
 COUNTRY_PRICE_COLUMN = {
-    "506": "Inscripción Costa Rica",  # CR
-    "598": "Inscripción Uruguay",    # UY
-    "595": "Inscripción Paraguay",   # PY
-    "591": "Inscripción Bolivia",    # BO
-    "54":  "Inscripción Argentina",  # AR
-    "56":  "Inscripción Chile",      # CL
-    "57":  "Inscripción Colombia",   # CO
-    "52":  "Inscripción México",     # MX
-    "51":  "Inscripción Perú",       # PE
+    "506": "Inscripción Costa Rica",
+    "598": "Inscripción Uruguay",
+    "595": "Inscripción Paraguay",
+    "591": "Inscripción Bolivia",
+    "54":  "Inscripción Argentina",
+    "56":  "Inscripción Chile",
+    "57":  "Inscripción Colombia",
+    "52":  "Inscripción México",
+    "51":  "Inscripción Perú",
 }
 
-# =========================
-# Utilidades
-# =========================
+# ===== Utils =====
 def _fold(s: str) -> str:
-    """Normaliza a minúsculas y quita acentos para comparaciones tolerantes."""
     s = (s or "").lower()
-    nfkd = unicodedata.normalize("NFD", s)
-    return "".join(c for c in nfkd if not unicodedata.combining(c))
-
+    nfkd = unicodedata.normalize('NFD', s)
+    return ''.join(c for c in nfkd if not unicodedata.combining(c))
 
 def build_twiml(message: str) -> Response:
-    xml = (
-        "<?xml version='1.0' encoding='UTF-8'?>"
-        f"<Response><Message>{xml_escape(message)}</Message></Response>"
-    )
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?><Response><Message>{xml_escape(message)}</Message></Response>"""
     return Response(xml, mimetype="application/xml")
 
-
+# ===== Sheet =====
 def fetch_sheet_rows(force: bool = False):
     now = time.time()
     if not force and _cache["rows"] and now - _cache["t"] < CACHE_SECONDS:
@@ -81,18 +63,16 @@ def fetch_sheet_rows(force: bool = False):
     reader = csv.DictReader(StringIO(resp.text))
 
     raw_headers = reader.fieldnames or []
-    headers = [(h or "").strip().lstrip("﻿") for h in raw_headers]
+    headers = [(h or "").strip().lstrip('﻿') for h in raw_headers]
     headers = [HEADER_SYNONYMS.get(h, h) for h in headers]
     if headers != EXPECTED_HEADERS:
-        raise ValueError(
-            f"Encabezados no coinciden. Esperado: {EXPECTED_HEADERS}. Recibido: {raw_headers}"
-        )
+        raise ValueError(f"Encabezados no coinciden. Esperado: {EXPECTED_HEADERS}. Recibido: {raw_headers}")
 
     rows = []
     for row in reader:
         clean = {}
         for k, v in row.items():
-            nk = (k or "").strip().lstrip("﻿")
+            nk = (k or "").strip().lstrip('﻿')
             nk = HEADER_SYNONYMS.get(nk, nk)
             clean[nk] = (v or "").strip()
         if clean.get("Curso"):
@@ -100,20 +80,16 @@ def fetch_sheet_rows(force: bool = False):
     _cache.update({"rows": rows, "t": now})
     return rows
 
-
+# ===== Logic =====
 def list_courses(rows):
-    return [r.get("Curso", "").strip() for r in rows if r.get("Curso")] 
-
+    return [r.get("Curso", "").strip() for r in rows if r.get("Curso")]
 
 def find_course(rows, text: str):
-    """Devuelve la fila del curso por coincidencia (tolerante a acentos y parciales)."""
     t = _fold(text)
-    # 1) substring directo
     for r in rows:
         name = (r.get("Curso") or "").strip()
         if name and _fold(name) in t:
             return r
-    # 2) intersección de tokens (>=3 letras)
     words = [w for w in re.findall(r"[A-Za-zÁÉÍÓÚáéíóúÑñ0-9]+", text) if len(w) >= 3]
     words_fold = set(_fold(w) for w in words)
     best_score, best_row = 0, None
@@ -128,15 +104,12 @@ def find_course(rows, text: str):
         return best_row
     return None
 
-
 def guess_country_price_column(from_number: str) -> str:
     num = (from_number or "").replace("whatsapp:", "").replace("+", "")
-    prefijos = sorted(COUNTRY_PRICE_COLUMN.keys(), key=lambda p: -len(p))
-    for p in prefijos:
+    for p in sorted(COUNTRY_PRICE_COLUMN.keys(), key=lambda p: -len(p)):
         if num.startswith(p):
             return COUNTRY_PRICE_COLUMN[p]
     return "Inscripción Resto Países"
-
 
 def first_response_for_course(row, from_number: str) -> str:
     titulo = row.get("Curso", "")
@@ -164,12 +137,10 @@ def first_response_for_course(row, from_number: str) -> str:
         partes.append(f"💳 *Inscripción ({price_col.replace('Inscripción ', '')}):* {precio}")
     if pdf:
         partes.append(f"📄 *PDF informativo:* {pdf}")
-
     partes.append("Si deseas *inscribirte*, responde: *me interesa* o *quiero inscribirme* y te derivo con un coordinador humano.")
     return "
 
 ".join(partes)
-
 
 def answer_faq(row, body_lower: str):
     out = []
@@ -187,22 +158,16 @@ def answer_faq(row, body_lower: str):
 
 ".join(out) if out else None
 
-
 def detect_intent_enroll(body_lower: str) -> bool:
     keys = ["me interesa", "quiero inscribirme", "inscribirme", "como me inscribo", "inscripción", "inscribirme ya"]
     return any(k in body_lower for k in keys)
-
 
 def send_admin_forward(user_from: str, user_body: str, course_name: str = None) -> bool:
     if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_WHATSAPP_NUMBER and ADMIN_FORWARD_NUMBER):
         return False
     try:
         url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
-        parts = [
-            f"Nuevo lead para {BRAND_NAME}",
-            f"Desde: {user_from}",
-            f"Mensaje: {user_body}",
-        ]
+        parts = [f"Nuevo lead para {BRAND_NAME}", f"Desde: {user_from}", f"Mensaje: {user_body}"]
         if course_name:
             parts.append(f"Curso: {course_name}")
         body = "
@@ -215,14 +180,12 @@ def send_admin_forward(user_from: str, user_body: str, course_name: str = None) 
         print("[ERROR send_admin_forward]", e)
         return False
 
-# =========================
-# Rutas
-# =========================
+# ===== Routes =====
 @app.get("/health")
 def health():
     return jsonify(ok=True, brand=BRAND_NAME, cached_rows=len(_cache["rows"]), cache_age_s=int(time.time()-_cache["t"]))
 
-@app.route("/sheet_refresh", methods=["GET", "POST"])
+@app.route("/sheet_refresh", methods=["GET","POST"])
 def sheet_refresh():
     fetch_sheet_rows(force=True)
     return jsonify(ok=True, refreshed=True, count=len(_cache["rows"]))
@@ -243,27 +206,24 @@ def whatsapp_webhook():
         print("[INBOUND] From=", from_number, "Body=", body)
 
         rows = fetch_sheet_rows()
-
         if not body:
             cursos = list_courses(rows)
             if cursos:
-                msg = f"Hola 👋 Soy el asistente de {BRAND_NAME}. ¿Sobre qué curso deseas info?
+                msg = "Hola 👋 Soy el asistente de {}. ¿Sobre qué curso deseas info?
 
 *Cursos:*
-- " + "
+- ".format(BRAND_NAME) + "
 - ".join(cursos)
             else:
-                msg = f"Hola 👋 Soy el asistente de {BRAND_NAME}. No encuentro cursos publicados aún."
+                msg = "Hola 👋 Soy el asistente de {}. No encuentro cursos publicados aún.".format(BRAND_NAME)
             return build_twiml(msg)
 
         body_lower = _fold(body)
 
-        # Intención de inscripción → derivar
         if detect_intent_enroll(body_lower):
             send_admin_forward(from_number, body)
             return build_twiml("¡Excelente! 🙌 Te conecto con un coordinador humano para continuar con tu inscripción.")
 
-        # Intento detectar curso
         row = find_course(rows, body)
         if row:
             faq_ans = answer_faq(row, body_lower)
@@ -272,7 +232,6 @@ def whatsapp_webhook():
             resp = first_response_for_course(row, from_number)
             return build_twiml(resp)
 
-        # Si no detecto curso
         cursos = list_courses(rows)
         if cursos:
             return build_twiml("Para ayudarte mejor, dime el *nombre del curso*.
@@ -280,7 +239,7 @@ def whatsapp_webhook():
 *Cursos:*
 - " + "
 - ".join(cursos))
-        return build_twiml(f"Por ahora no encuentro cursos publicados en {BRAND_NAME}.")
+        return build_twiml("Por ahora no encuentro cursos publicados en {}.".format(BRAND_NAME))
 
     except Exception as e:
         print("[ERROR /whatsapp]", e)
