@@ -88,7 +88,7 @@ def fetch_sheet_rows(force: bool = False):
     headers = [(h or '').strip().lstrip('\ufeff') for h in raw_headers]
     headers = [HEADER_SYNONYMS.get(h, h) for h in headers]
 
-    # Validación flexible: todos los requeridos deben estar presentes; Alias es opcional
+    # Validación flexible: todos los requeridos deben estar; Alias es opcional
     missing = [h for h in EXPECTED_HEADERS_BASE if h not in headers]
     if missing:
         raise ValueError('Faltan encabezados requeridos: {}. Recibido: {}'.format(missing, raw_headers))
@@ -165,13 +165,13 @@ def first_response_for_course(row, from_number: str) -> str:
     precio = row.get(price_col, '')
 
     partes = []
-    if titulo:   partes.append('*{}* — {}'.format(titulo, BRAND_NAME))
-    if texto:    partes.append(texto)
+    if titulo:       partes.append('*{}* — {}'.format(titulo, BRAND_NAME))
+    if texto:        partes.append(texto)
     if fecha_inicio: partes.append('📅 *Inicio:* {}'.format(fecha_inicio))
-    if duracion: partes.append('⏳ *Duración:* {}'.format(duracion))
-    if horarios: partes.append('🕒 *Horarios:* {}'.format(horarios))
-    if precio:   partes.append('💳 *Inscripción ({}):* {}'.format(price_col.replace('Inscripción ', ''), precio))
-    if pdf:      partes.append('📄 *PDF informativo:* {}'.format(pdf))
+    if duracion:     partes.append('⏳ *Duración:* {}'.format(duracion))
+    if horarios:     partes.append('🕒 *Horarios:* {}'.format(horarios))
+    if precio:       partes.append('💳 *Inscripción ({}):* {}'.format(price_col.replace('Inscripción ', ''), precio))
+    if pdf:          partes.append('📄 *PDF informativo:* {}'.format(pdf))
     partes.append('Si deseas *inscribirte*, responde: *me interesa* o *quiero inscribirme* y te derivo con un coordinador humano.')
     return '\n\n'.join(partes)
 
