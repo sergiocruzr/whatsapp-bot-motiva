@@ -52,6 +52,9 @@ def build_twiml(message):
     xml = "<?xml version='1.0' encoding='UTF-8'?><Response><Message>{}</Message></Response>".format(xml_escape(message))
     return Response(xml, mimetype='application/xml')
 
+def _has_any(text, keywords):
+    return any(k in text for k in keywords)
+
 # ===== Sheet =====
 def _rebuild_alias_index(rows):
     idx = {}
@@ -187,19 +190,29 @@ def first_response_for_course(row, from_number):
     partes.append('Si deseas inscribirte, responde: "me interesa" o "quiero inscribirme".')
     return '\n\n'.join(partes)
 
-def answer_faq(row, body_lower):
-    out = []
-    if any(k in body_lower for k in ['precio','costo','valor','cuanto','cuánto','inscrip']):
-        out.append('Para precio exacto, indicanos tu pais o escribe: precio [pais].')
-    if any(k in body_lower for k in ['horario','horarios','hora','clase','clases']):
+def answer_specific(row, body_lower, from_number):
+    # Respuestas especificas SOLO si el usuario las pide
+    if _has_any(body_lower, ['precio','costo','valor','inscrip']):
+        price_col = guess_country_price_column(from_number or '')
+        precio = row.get(price_col, '') or row.get('Inscripción Resto Países', '')
+        if precio:
+            return 'Inscripcion ({}): {}'.format(price_col.replace('Inscripción ', ''), precio)
+        return 'Indicanos tu pais para pasarte el valor exacto.'
+    if _has_any(body_lower, ['horario','horarios','hora','clase','clases']):
         if row.get('Horarios'):
-            out.append('Horarios: {}'.format(row['Horarios']))
-    if any(k in body_lower for k in ['modalidad','metodolog','online','virtual','en vivo','zoom','meet']):
-        out.append('Modalidad en vivo por videoconferencia (clases sincronicas).')
-    faq = (row.get('FAQ') or '').strip()
-    if faq:
-        out.append('FAQ: {}'.format(faq))
-    return '\n\n'.join(out) if out else None
+            return 'Horarios: {}'.format(row['Horarios'])
+        return 'Los horarios estan en el PDF informativo.'
+    if _has_any(body_lower, ['pdf']):
+        pdf = (row.get('Link PDF') or '').strip()
+        if pdf:
+            return 'PDF informativo: {}'.format(pdf)
+        return 'Aun no tengo el PDF de este curso.'
+    if _has_any(body_lower, ['faq','preguntas']):
+        faq = (row.get('FAQ') or '').strip()
+        if faq:
+            return 'FAQ: {}'.format(faq)
+        return 'Por ahora no tengo un FAQ para este curso.'
+    return None  # si no pidio algo especifico, devolvemos None para enviar la info completa
 
 def detect_intent_enroll(body_lower):
     keys = ['me interesa','quiero inscribirme','inscribirme','como me inscribo','inscripcion','inscripción']
@@ -241,7 +254,7 @@ def sheet_preview():
     except Exception as e:
         return jsonify(ok=False, error=str(e)), 500
 
-# PARCHE: acepta GET y POST; usa request.values (soporta querystring y form)
+# Acepta GET y POST; usa request.values para leer Body/From desde querystring o form
 @app.route('/whatsapp', methods=['GET', 'POST'])
 def whatsapp_webhook():
     try:
@@ -261,6 +274,7 @@ def whatsapp_webhook():
         body_fold = _fold(body)
 
         if detect_intent_enroll(body_fold):
+            # opcional: reenvio a coordinador
             send_admin_forward(from_number, body)
             return build_twiml('Perfecto. Te conecto con un coordinador humano para tu inscripcion.')
 
@@ -268,13 +282,15 @@ def whatsapp_webhook():
         print('[MATCH]', 'row=' + (row.get('Curso','') if row else 'None'))
 
         if row:
-            # Si el usuario pregunto algo tipo precio/horario, intenta FAQ primero
-            faq_ans = answer_faq(row, body_fold)
-            if faq_ans:
-                return build_twiml(faq_ans)
+            # 1) Si pidio algo especifico, respondemos eso
+            specific = answer_specific(row, body_fold, from_number)
+            if specific:
+                return build_twiml(specific)
+            # 2) Si no, damos la ficha completa del curso
             resp = first_response_for_course(row, from_number)
             return build_twiml(resp)
 
+        # No matcheo ningun curso
         cursos = list_courses(rows)
         if cursos:
             return build_twiml('Para ayudarte mejor, dime el nombre del curso.\n\nCursos:\n- ' + '\n- '.join(cursos))
