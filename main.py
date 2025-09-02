@@ -80,6 +80,25 @@ def build_twiml(message):
 def _has_any(text, keywords):
     return any(k in text for k in keywords)
 
+# ===== Sinónimos para tokens (FAQ/fuzzy) =====
+# Normaliza palabras a raíces equivalentes para mejorar coincidencias
+TOKEN_SYNONYMS = {
+    # grabadas / grabación
+    'grabada': 'grabadas', 'grabadas': 'grabadas', 'grabado': 'grabadas', 'grabados': 'grabadas',
+    'grabacion': 'grabadas', 'grabaciones': 'grabadas', 'grabar': 'grabadas', 'repeticion': 'grabadas',
+    'repeticiones': 'grabadas', 'ondemand': 'grabadas', 'on': 'grabadas', 'demand': 'grabadas',
+    'despues': 'grabadas', 'después': 'grabadas',
+    # precio
+    'costo': 'precio', 'valor': 'precio', 'arancel': 'precio', 'inversion': 'precio', 'inversión': 'precio', 'pago': 'precio',
+    # horarios
+    'hora': 'horarios', 'clase': 'horarios', 'clases': 'horarios', 'cronograma': 'horarios',
+    # modalidad / metodología
+    'metodologia': 'metodologia', 'metodología': 'metodologia', 'metodo': 'metodologia', 'método': 'metodologia',
+}
+
+def _normalize_token(tok):
+    return TOKEN_SYNONYMS.get(tok, tok)
+
 # ===== Hoja =====
 def _rebuild_alias_index(rows):
     idx = {}
@@ -206,6 +225,8 @@ INTENTS = {
     'pdf': ['pdf','brochure','informativo','dossier','folleto'],
     'faq': ['faq','preguntas','dudas','consulta','general'],
     'enroll': ['me interesa','quiero inscribirme','inscribirme','como me inscribo','cómo me inscribo','quiero anotarme','quiero matricularme'],
+    # grabadas (keywords directas por si no matchea FAQ)
+    'recordings': ['grabada','grabadas','grabacion','grabación','grabaciones','repeticion','repetición','on demand','ondemand','ver despues','ver después','quedan grabadas'],
 }
 
 def classify_intents(body_lower):
@@ -238,7 +259,9 @@ def _faq_parse_blocks(faq_text):
     return blocks
 
 def _faq_tokens(s):
-    return [w for w in re.findall(r"[a-z0-9áéíóúñ]+", _fold(s)) if len(w) >= 3]
+    toks = [w for w in re.findall(r"[a-z0-9áéíóúñ]+", _fold(s)) if len(w) >= 3]
+    toks = [_normalize_token(w) for w in toks]
+    return toks
 
 def answer_from_faq(row, user_text):
     faq_text = (row.get("FAQ") or "").strip()
@@ -263,8 +286,10 @@ def answer_from_faq(row, user_text):
             if score > best_score:
                 best_score, best_ans = score, ans
 
+    # Umbral flexible (mejor con sinónimos normalizados)
     if best_score >= 0.5 or (best_score >= 0.34 and len(qtok) >= 2):
-        return best_ans
+        # Respuesta más "amigable"
+        return '😊 ' + best_ans
     return None
 
 # ===== Respuestas =====
@@ -355,7 +380,16 @@ def answer_for_intents(row, intents, body_lower, from_number):
         val = (row.get('Link PDF') or '').strip()
         if val: answers.append('📄 *PDF informativo:* {}'.format(val))
 
-    if intents.get('faq'):
+    # Si detectamos palabras de grabación explícitas, intenta FAQ primero
+    if intents.get('recordings'):
+        faq_ans = answer_from_faq(row, body_lower)
+        if faq_ans:
+            answers.append('▶️ ' + faq_ans)
+        else:
+            # fallback amistoso si el FAQ no tiene
+            answers.append('▶️ Sí, solemos dejar las clases grabadas para que puedas verlas luego. (Confírmame si te interesa y te paso el detalle)')
+
+    if intents.get('faq') and not answers:
         faq = (row.get('FAQ') or '').strip()
         if faq:
             answers.append('ℹ️ *FAQ:* {}'.format(faq))
@@ -363,11 +397,11 @@ def answer_for_intents(row, intents, body_lower, from_number):
     if intents.get('info') and not answers:
         answers.append(course_card(row, from_number, body_lower))
 
-    # Si aún no hay respuesta específica, intenta FAQ por similitud
+    # Si aún no hay respuesta específica, intenta FAQ por similitud (amigable)
     if not answers:
         faq_ans = answer_from_faq(row, body_lower)
         if faq_ans:
-            return 'ℹ️ ' + faq_ans
+            return faq_ans
 
     return '\n\n'.join([a for a in answers if a])
 
