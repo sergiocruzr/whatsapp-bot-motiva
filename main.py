@@ -11,12 +11,12 @@ BRAND_NAME = os.getenv('BRAND_NAME', 'Motiva Educación')
 BOT_NAME = os.getenv('BOT_NAME', 'Moti')
 SHEET_CSV_URL = os.getenv('SHEET_CSV_URL')
 
-# Twilio para notificar al asesor
+# Twilio para notificar al asesor (opcional)
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
 TWILIO_WHATSAPP_NUMBER = os.getenv('TWILIO_WHATSAPP_NUMBER')
 
-# Asesor (muestra al usuario y también notifica)
+# Asesor (mostrado al usuario y usado para notificación)
 ADVISOR_E164 = os.getenv('ADVISOR_E164', '+59162723944')   # visible al usuario
 ADVISOR_WA_LINK = 'https://wa.me/{}'.format(ADVISOR_E164.replace('+',''))
 ADMIN_FORWARD_NUMBER = os.getenv('ADMIN_FORWARD_NUMBER', 'whatsapp:{}'.format(ADVISOR_E164))  # para Twilio REST
@@ -25,7 +25,6 @@ ADMIN_FORWARD_NUMBER = os.getenv('ADMIN_FORWARD_NUMBER', 'whatsapp:{}'.format(AD
 _cache = {'rows': [], 't': 0.0, 'alias_idx': {}}
 CACHE_SECONDS = 300
 
-# Memoria in-memory por número (contexto de curso)
 _sessions = {}  # { from_number: {'course': <row>, 't': <epoch>} }
 SESSION_TTL = 60*60  # 1 hora
 
@@ -166,8 +165,8 @@ def find_course(rows, user_text):
         if a and a in q_fold:
             print('[ALIAS HIT]', a, '->', r.get('Curso'))
             return r
-    # (B) "info|precio|horario|pdf <algo>"
-    m = re.search(r'(?:info|informacion|información|precio|horarios?|pdf|modalidad|metodolog[íi]a)\\s+(.+)$', q_fold)
+    # (B) "info|precio|horario|pdf|modalidad|metodología <algo>"
+    m = re.search(r'(?:info|informacion|información|precio|horarios?|pdf|modalidad|metodolog(?:ía|ia))\s+(.+)$', q_fold)
     if m:
         cand = m.group(1).strip()
         r = _best_row_by_query(rows, cand)
@@ -194,7 +193,7 @@ def pick_price_column_from_text(body_lower, from_number):
             return col
     return guess_country_price_column(from_number or '')
 
-# ===== Clasificación de intenciones (sinónimos) =====
+# ===== Intenciones con sinónimos =====
 INTENTS = {
     'info': ['info','informacion','información','mas info','más info','detalles','ficha','sobre el curso'],
     'price': ['precio','costo','valor','arancel','inversion','inversión','inscrip','cuanto','cuánto','vale','pago'],
@@ -214,10 +213,59 @@ def classify_intents(body_lower):
     for k, words in INTENTS.items():
         if _has_any(body_lower, words):
             flags[k] = True
-    # Heurística: si solo dice "precio bolivia" etc., marcar price
-    if re.search(r'precio\\s+[a-záéíóúñ ]{3,}', body_lower):
+    if re.search(r'precio\s+[a-záéíóúñ ]{3,}', body_lower):
         flags['price'] = True
     return flags
+
+# ===== FAQ por similitud =====
+def _faq_parse_blocks(faq_text):
+    """
+    Devuelve lista de (utterances[], answer) según formato:
+      Si preguntan: ... / ... / ...
+      Respuesta: ...
+    """
+    if not faq_text:
+        return []
+    text = faq_text.strip()
+    pattern = re.compile(r"Si preguntan:\s*(.+?)\s*Respuesta:\s*(.+?)(?=(?:\n\s*Si preguntan:)|\Z)", re.S | re.I)
+    blocks = []
+    for m in pattern.finditer(text):
+        qpart = m.group(1).strip()
+        ans = m.group(2).strip()
+        utterances = [u.strip(" \t\r\n.?!¡¿") for u in re.split(r"\s*/\s*|\n", qpart) if u.strip()]
+        if utterances and ans:
+            blocks.append((utterances, ans))
+    return blocks
+
+def _faq_tokens(s):
+    return [w for w in re.findall(r"[a-z0-9áéíóúñ]+", _fold(s)) if len(w) >= 3]
+
+def answer_from_faq(row, user_text):
+    faq_text = (row.get("FAQ") or "").strip()
+    if not faq_text:
+        return None
+    blocks = _faq_parse_blocks(faq_text)
+    if not blocks:
+        return None
+
+    qtok = set(_faq_tokens(user_text))
+    if not qtok:
+        return None
+
+    best_score, best_ans = 0.0, None
+    for utterances, ans in blocks:
+        for u in utterances:
+            utok = set(_faq_tokens(u))
+            if not utok:
+                continue
+            overlap = len(qtok & utok)
+            score = overlap / max(1, len(utok))
+            if score > best_score:
+                best_score, best_ans = score, ans
+
+    if best_score >= 0.5 or (best_score >= 0.34 and len(qtok) >= 2):
+        return best_ans
+    return None
 
 # ===== Respuestas =====
 def course_card(row, from_number, body_lower=''):
@@ -255,7 +303,7 @@ def course_card(row, from_number, body_lower=''):
     if metodologia:
         partes.append('🧩 *Metodología:* {}'.format(metodologia))
 
-    price_col = pick_price_column_from_text(body_lower, from_number)  # usa país del texto si viene
+    price_col = pick_price_column_from_text(body_lower, from_number)
     precio = row.get(price_col, '') or row.get('Inscripción Resto Países', '')
     if precio:
         partes.append('💳 *Inscripción ({}):* {}'.format(price_col.replace('Inscripción ', ''), precio))
@@ -268,7 +316,6 @@ def course_card(row, from_number, body_lower=''):
     return '\n\n'.join(partes)
 
 def answer_for_intents(row, intents, body_lower, from_number):
-    # Prioriza respuestas especificas si se piden
     answers = []
 
     if intents.get('price'):
@@ -277,7 +324,7 @@ def answer_for_intents(row, intents, body_lower, from_number):
         if precio:
             answers.append('💳 *Inscripción ({}):* {}'.format(col.replace('Inscripción ', ''), precio))
         else:
-            answers.append('💳 Para el valor exacto, indícame tu país (ej.: "precio Bolivia").')
+            answers.append('💳 Para darte el valor exacto, indícame tu país (ej.: "precio Bolivia").')
 
     if intents.get('schedule'):
         val = (row.get('Horarios') or '').strip()
@@ -310,11 +357,17 @@ def answer_for_intents(row, intents, body_lower, from_number):
 
     if intents.get('faq'):
         faq = (row.get('FAQ') or '').strip()
-        if faq: answers.append('ℹ️ *FAQ:* {}'.format(faq))
+        if faq:
+            answers.append('ℹ️ *FAQ:* {}'.format(faq))
 
     if intents.get('info') and not answers:
-        # Si pidió "info" pero no pidió algo específico, envía ficha completa
         answers.append(course_card(row, from_number, body_lower))
+
+    # Si aún no hay respuesta específica, intenta FAQ por similitud
+    if not answers:
+        faq_ans = answer_from_faq(row, body_lower)
+        if faq_ans:
+            return 'ℹ️ ' + faq_ans
 
     return '\n\n'.join([a for a in answers if a])
 
@@ -374,7 +427,8 @@ def sheet_preview():
     except Exception as e:
         return jsonify(ok=False, error=str(e)), 500
 
-@app.route('/whatsapp', methods=['GET','POST'])
+# Acepta GET y POST; usa request.values para leer Body/From desde querystring o form
+@app.route('/whatsapp', methods=['GET', 'POST'])
 def whatsapp_webhook():
     try:
         from_number = request.values.get('From', '')
@@ -414,21 +468,26 @@ def whatsapp_webhook():
         if row:
             set_session_course(from_number, row)
         else:
-            # usar contexto si hay
             row = get_session_course(from_number)
 
         print('[MATCH]', 'row=' + (row.get('Curso','') if row else 'None'), 'intents=', intents)
 
         # Si hay curso
         if row:
-            # Si pidió algo específico -> responde eso
             specific = answer_for_intents(row, intents, body_fold, from_number)
             if specific:
                 return build_twiml('Aquí tienes:\n\n' + specific)
-            # Si pidió "info" o algo general -> ficha completa
-            if intents.get('info') or any(intents.values()) == False:
-                return build_twiml(course_card(row, from_number, body_fold))
-            # Fallback de seguridad: ficha
+
+            # Si NO pidió "info" explícita y no hubo match, deriva al asesor
+            if not intents.get('info'):
+                msg = (
+                    'Para esa consulta puntual, te conecto con nuestro asesor humano 😊\n\n'
+                    '📲 {}  ({})\n\n'
+                    'Si quieres, también puedo pasarte la ficha completa del curso. Escribe: "info".'
+                ).format(ADVISOR_E164, ADVISOR_WA_LINK)
+                return build_twiml(msg)
+
+            # Pidió "info": ficha completa
             return build_twiml(course_card(row, from_number, body_fold))
 
         # Si NO hay curso y pidió algo específico (precio/horarios/etc.) -> derivar
@@ -440,7 +499,7 @@ def whatsapp_webhook():
             ).format(ADVISOR_E164, ADVISOR_WA_LINK)
             return build_twiml(msg)
 
-        # Caso muy general sin curso ni intención clara: listar cursos
+        # Caso general sin curso ni intención clara: listar cursos
         cursos = list_courses(rows)
         if cursos:
             return build_twiml('Para ayudarte mejor, dime el *nombre del curso*.\n\n*Cursos:*\n- ' + '\n- '.join(cursos))
