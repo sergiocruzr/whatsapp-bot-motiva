@@ -11,6 +11,15 @@ BRAND_NAME = os.getenv('BRAND_NAME', 'Motiva Educación')
 BOT_NAME = os.getenv('BOT_NAME', 'Moti')
 SHEET_CSV_URL = os.getenv('SHEET_CSV_URL')
 
+# Modo y umbral de FAQ
+FAQ_MODE = os.getenv('FAQ_MODE', 'hybrid').strip().lower()  # 'hybrid' | 'strict'
+def _env_float(name, default):
+    try:
+        return float(os.getenv(name, str(default)))
+    except Exception:
+        return default
+FAQ_THRESHOLD = _env_float('FAQ_THRESHOLD', 0.45)  # sensibilidad del match FAQ
+
 # Twilio para notificar al asesor (opcional)
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
@@ -80,33 +89,34 @@ def build_twiml(message):
 def _has_any(text, keywords):
     return any(k in text for k in keywords)
 
-# stopwords básicas ES (para mejorar similitud FAQ)
+# Stopwords básicas ES (para mejorar similitud FAQ)
 STOPWORDS_ES = set("""
 de del la las el los un una unos unas y o u a ante bajo cabe con contra desde durante en entre hacia hasta mediante para por segun según sin so sobre tras
-al lo le les unx es son fue fueron era eran ser estar estoy esta estan estamos estas este estos estas esta ese esa esos esas que como cual cuales quién quienes
-donde adonde cuando cuanto cuánto cuantos cuántos cual cuale cuales
-mi mis tu tus su sus me te se nos les ya no si sí hay es son fui soy eres somos estan está estás están estan
+al lo le les es son fue fueron era eran ser estar estoy esta estan estamos estas este estos estas ese esa esos esas que como cual cuales quien quienes
+donde adonde cuando cuanto cuantos cual cuale cuales
+ya no si hay soy eres somos
 """.split())
 
-# sinónimos normalizados (todo sin acentos: usamos _fold)
+# Sinónimos/normalización de tokens (todo ya sin acentos por _fold)
 TOKEN_SYNONYMS = {
     # grabadas / grabacion
     'grabada': 'grabadas', 'grabadas': 'grabadas', 'grabado': 'grabadas', 'grabados': 'grabadas',
     'grabacion': 'grabadas', 'grabaciones': 'grabadas', 'repeticion': 'grabadas', 'repeticiones': 'grabadas',
-    'ondemand': 'grabadas', 'demand': 'grabadas', 'despues': 'grabadas', 'despues.': 'grabadas',
+    'ondemand': 'grabadas', 'demand': 'grabadas', 'despues': 'grabadas',
     # precio
     'costo': 'precio', 'valor': 'precio', 'arancel': 'precio', 'inversion': 'precio', 'pago': 'precio',
-    # horarios
-    'hora': 'horarios', 'clase': 'horarios', 'clases': 'horarios', 'cronograma': 'horarios',
+    # horarios (sin "clase/clases" para evitar confusiones con grabadas)
+    'hora': 'horarios', 'cronograma': 'horarios',
     # modalidad / metodologia
-    'metodologia': 'metodologia', 'metodo': 'metodologia', 'en': 'modalidad', 'vivo': 'modalidad',
+    'metodologia': 'metodologia', 'metodo': 'metodologia',
     # titulos / licencias / certificados
     'titulo': 'titulo', 'licencia': 'licencia',
     'certificacion': 'certificado', 'certificados': 'certificado', 'certificado': 'certificado',
     # docentes / profesores
     'docente': 'docentes', 'docentes': 'docentes', 'profesor': 'docentes', 'profesores': 'docentes',
     # plataforma / materiales
-    'plataforma': 'plataforma', 'material': 'materiales', 'materiales': 'materiales', 'videos': 'materiales', 'presentaciones': 'materiales', 'libros': 'materiales', 'guias': 'materiales', 'planillas': 'materiales',
+    'plataforma': 'plataforma', 'material': 'materiales', 'materiales': 'materiales', 'videos': 'materiales',
+    'presentaciones': 'materiales', 'libros': 'materiales', 'guias': 'materiales', 'planillas': 'materiales',
     # requisitos / dirigido
     'requisitos': 'requisitos', 'dirigido': 'dirigido',
     # audio
@@ -177,12 +187,12 @@ def _best_row_by_query(rows, q_fold):
         name = (r.get('Curso') or '').strip()
         if name and q_fold in _fold(name):
             return r
-    # (2) nombre completo dentro del texto del usuario
+    # (2) nombre del curso dentro del texto del usuario
     for r in rows:
         name = (r.get('Curso') or '').strip()
         if name and _fold(name) in q_fold:
             return r
-    # (3) intersección de tokens >=3 (ignorando "curso", "de", etc.)
+    # (3) intersección de tokens >=3 (ignorando "curso"/"cursos")
     words = [w for w in re.findall(r'[a-z0-9áéíóúñ]+', q_fold) if len(w) >= 3 and w not in ('curso','cursos')]
     words = set(words)
     best, best_row = 0, None
@@ -233,7 +243,7 @@ def pick_price_column_from_text(body_lower, from_number):
 INTENTS = {
     'info': ['info','informacion','información','mas info','más info','detalles','ficha','sobre el curso'],
     'price': ['precio','costo','valor','arancel','inversion','inversión','inscrip','cuanto','cuánto','vale','pago'],
-    'schedule': ['horario','horarios','hora','clase','clases','cronograma'],
+    'schedule': ['horario','horarios','hora','cronograma'],  # sin 'clase/clases'
     'modality': ['modalidad','online','virtual','en vivo','zoom','meet','videoconferencia'],
     'methodology': ['metodologia','metodología','metodo','método','como se cursa','cómo se cursa'],
     'start': ['inicio','empieza','empiezan','fecha de inicio'],
@@ -242,7 +252,6 @@ INTENTS = {
     'pdf': ['pdf','brochure','informativo','dossier','folleto'],
     'faq': ['faq','preguntas','dudas','consulta','general'],
     'enroll': ['me interesa','quiero inscribirme','inscribirme','como me inscribo','cómo me inscribo','quiero anotarme','quiero matricularme'],
-    # grabadas (por si no matchea solo con FAQ)
     'recordings': ['grabada','grabadas','grabacion','grabación','grabaciones','repeticion','repetición','on demand','ondemand','ver despues','ver después','quedan grabadas'],
 }
 GREETINGS = ['hola','buenas','buenos dias','buenos días','buenas tardes','buenas noches','hey','que tal','qué tal']
@@ -256,7 +265,7 @@ def classify_intents(body_lower):
         flags['price'] = True
     return flags
 
-# ===== FAQ por similitud =====
+# ===== FAQ (parsing + similitud) =====
 def _faq_parse_blocks(faq_text):
     """
     Devuelve lista de (utterances[], answer) según formato:
@@ -277,11 +286,16 @@ def _faq_parse_blocks(faq_text):
     return blocks
 
 def _faq_tokens(s):
-    # tokens normalizados y sin stopwords
     folded = _fold(s)
     toks = [t for t in re.findall(r"[a-z0-9]+", folded) if len(t) >= 3 and t not in STOPWORDS_ES]
     toks = [_normalize_token(t) for t in toks]
     return toks
+
+def _friendly_from_sheet(text):
+    """Si FAQ_MODE=hybrid, agrega tono amable; si strict, devuelve tal cual."""
+    if FAQ_MODE == 'hybrid':
+        return 'Claro 😊 ' + text
+    return text
 
 def answer_from_faq(row, user_text):
     faq_text = (row.get("FAQ") or "").strip()
@@ -306,10 +320,17 @@ def answer_from_faq(row, user_text):
             if score > best_score:
                 best_score, best_ans = score, ans
 
-    # umbral flexible
-    if best_score >= 0.45 or (best_score >= 0.30 and len(qtok) >= 2):
-        # respuesta más amable, sin inventar
-        return 'Claro 😊 ' + best_ans
+    # umbral configurable
+    if best_score >= FAQ_THRESHOLD or (best_score >= (FAQ_THRESHOLD - 0.15) and len(qtok) >= 2):
+        return _friendly_from_sheet(best_ans)
+    return None
+
+def answer_from_faq_global(rows, user_text):
+    """Busca la mejor respuesta FAQ entre todos los cursos (para preguntas generales sin curso aún)."""
+    for r in rows:
+        a = answer_from_faq(r, user_text)
+        if a:
+            return a
     return None
 
 # ===== Respuestas =====
@@ -401,23 +422,28 @@ def answer_for_intents(row, intents, body_lower, from_number):
         val = (row.get('Link PDF') or '').strip()
         if val: answers.append('📄 *PDF informativo:* {}'.format(val))
 
-    # consultas sobre "grabadas" directas -> intenta FAQ primero
-    if intents.get('recordings'):
+    # consultas sobre "grabadas" -> intentar FAQ primero (prioridad FAQ)
+    if intents.get('recordings') and not answers:
         faq_ans = answer_from_faq(row, body_lower)
         if faq_ans:
-            answers.append('▶️ ' + faq_ans)
+            answers.append(faq_ans)
         else:
-            answers.append('▶️ Sí, solemos dejar las clases grabadas para que puedas verlas luego.')
+            # fallback amable (no inventa datos específicos)
+            answers.append(_friendly_from_sheet('Sí. Todas las clases quedan grabadas para verlas cuando quieras.'))
 
     if intents.get('faq') and not answers:
         faq = (row.get('FAQ') or '').strip()
         if faq:
-            answers.append('ℹ️ *FAQ:* {}'.format(faq))
+            # En strict devolvemos tal cual; en hybrid lo dejamos con encabezado amable global
+            if FAQ_MODE == 'hybrid':
+                answers.append('ℹ️ Aquí tienes algunas respuestas frecuentes:\n\n' + faq)
+            else:
+                answers.append(faq)
 
     if intents.get('info') and not answers:
         answers.append(course_card(row, from_number, body_lower))
 
-    # si aún no hay respuesta específica, intenta FAQ por similitud (amigable)
+    # Si aún no hay respuesta específica, intenta FAQ por similitud (prioridad total)
     if not answers:
         faq_ans = answer_from_faq(row, body_lower)
         if faq_ans:
@@ -427,7 +453,8 @@ def answer_for_intents(row, intents, body_lower, from_number):
 
 # ===== Handoff =====
 def detect_intent_enroll(body_lower):
-    return _has_any(body_lower, INTENTS['enroll'])
+    keys = ['me interesa','quiero inscribirme','inscribirme','como me inscribo','cómo me inscribo','quiero anotarme','quiero matricularme']
+    return any(k in body_lower for k in keys)
 
 def send_admin_forward(user_from, user_body, course_name=None):
     if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_WHATSAPP_NUMBER and ADMIN_FORWARD_NUMBER):
@@ -466,7 +493,11 @@ def get_session_course(from_number):
 @app.get('/health')
 def health():
     age = int(time.time() - _cache['t']) if _cache['t'] else None
-    return jsonify(ok=True, brand=BRAND_NAME, bot=BOT_NAME, cached_rows=len(_cache['rows']), cache_age_s=age)
+    return jsonify(
+        ok=True, brand=BRAND_NAME, bot=BOT_NAME,
+        cached_rows=len(_cache['rows']), cache_age_s=age,
+        faq_mode=FAQ_MODE, faq_threshold=FAQ_THRESHOLD
+    )
 
 @app.route('/sheet_refresh', methods=['GET','POST'])
 def sheet_refresh():
@@ -492,17 +523,36 @@ def whatsapp_webhook():
         rows = fetch_sheet_rows()
         body_fold = _fold(body)
 
-        # 0) intentar detectar curso primero: si lo encuentro, respondo directo con ficha (o con la intención)
+        # 1) Intento de inscripción (deriva + avisa)
+        if detect_intent_enroll(body_fold):
+            row_for_forward = find_course(rows, body) or get_session_course(from_number)
+            course_name = row_for_forward.get('Curso') if row_for_forward else None
+            sent = send_admin_forward(from_number, body, course_name=course_name)
+            human = 'Ya avisé a nuestro asesor ✅.' if sent else 'Te conecto con nuestro asesor.'
+            reply = (
+                '¡Genial! 🙌 {} En breve te escribirá.\n\n'
+                'Si prefieres, contáctalo ahora:\n'
+                '📲 {}  ({})'
+            ).format(human, ADVISOR_E164, ADVISOR_WA_LINK)
+            return build_twiml(reply)
+
+        # 2) ¿mencionó curso? si sí, prioriza FAQ del curso
         row_direct = find_course(rows, body) if body else None
         if row_direct:
             set_session_course(from_number, row_direct)
+            # FAQ del curso tiene prioridad sobre otras intenciones
+            faq_ans = answer_from_faq(row_direct, body_fold)
+            if faq_ans:
+                return build_twiml(faq_ans)
+            # si no hay FAQ claro, pasa a intenciones
             intents = classify_intents(body_fold)
             specific = answer_for_intents(row_direct, intents, body_fold, from_number)
             if specific:
                 return build_twiml('Aquí tienes:\n\n' + specific)
             return build_twiml(course_card(row_direct, from_number, body_fold))
 
-        # 1) sin body o solo saludo -> saludo amable + lista de cursos
+        # 3) Sin curso aún: si es saludo o vacío -> saludo + lista
+        GREETINGS = ['hola','buenas','buenos dias','buenos días','buenas tardes','buenas noches','hey','que tal','qué tal']
         if not body or body_fold in GREETINGS or any(body_fold.startswith(g) for g in GREETINGS):
             cursos = list_courses(rows)
             if cursos:
@@ -515,16 +565,27 @@ def whatsapp_webhook():
                 msg = 'Hola, gracias por contactarnos 🙌 Soy *{}*. Aún no encuentro cursos publicados.'.format(BOT_NAME)
             return build_twiml(msg)
 
-        # 2) intents + contexto
-        intents = classify_intents(body_fold)
-        row = get_session_course(from_number)
+        # 4) Sin curso, pero quizá es una pregunta general de FAQ (global)
+        faq_any = answer_from_faq_global(rows, body_fold)
+        if faq_any:
+            return build_twiml(faq_any)
 
-        if row:
-            specific = answer_for_intents(row, intents, body_fold, from_number)
+        # 5) Intenciones + contexto existente (si lo hubiera)
+        intents = classify_intents(body_fold)
+        row_ctx = get_session_course(from_number)
+
+        if row_ctx:
+            # otra vez: FAQ del curso tiene prioridad absoluta
+            faq_ans = answer_from_faq(row_ctx, body_fold)
+            if faq_ans:
+                return build_twiml(faq_ans)
+
+            specific = answer_for_intents(row_ctx, intents, body_fold, from_number)
             if specific:
                 return build_twiml('Aquí tienes:\n\n' + specific)
             if intents.get('info'):
-                return build_twiml(course_card(row, from_number, body_fold))
+                return build_twiml(course_card(row_ctx, from_number, body_fold))
+
             # sin match claro -> derivar
             msg = (
                 'Para esa consulta puntual, te conecto con nuestro asesor humano 😊\n\n'
@@ -533,26 +594,16 @@ def whatsapp_webhook():
             ).format(ADVISOR_E164, ADVISOR_WA_LINK)
             return build_twiml(msg)
 
-        # 3) inscripción sin curso en contexto → igual derivamos/avisamos
-        if detect_intent_enroll(body_fold):
-            sent = send_admin_forward(from_number, body, course_name=None)
-            human = 'Ya avisé a nuestro asesor ✅.' if sent else 'Te conecto con nuestro asesor.'
-            reply = (
-                '¡Genial! 🙌 {} En breve te escribirá.\n\n'
-                'Si prefieres, contáctalo ahora:\n'
-                '📲 {}  ({})'
-            ).format(human, ADVISOR_E164, ADVISOR_WA_LINK)
-            return build_twiml(reply)
-
-        # 4) sin curso en contexto y con intención específica (precio/horarios/etc.) -> derivar
+        # 6) Sin curso y con intención específica -> pedir curso o derivar
         if any(v for k, v in intents.items() if k not in ['info','faq']) or intents.get('info') or intents.get('faq'):
             msg = (
-                'Para darte esa info al toque, indícame primero el *nombre del curso*. O si prefieres, te conecto con nuestro asesor humano 😊\n\n'
+                'Para darte esa info al toque, indícame primero el *nombre del curso*. '
+                'O si prefieres, te conecto con nuestro asesor humano 😊\n\n'
                 '📲 {}  ({})'
             ).format(ADVISOR_E164, ADVISOR_WA_LINK)
             return build_twiml(msg)
 
-        # 5) fallback general: pedir curso
+        # 7) Fallback general: pedir curso
         cursos = list_courses(rows)
         if cursos:
             return build_twiml('Para ayudarte mejor, dime el *nombre del curso*.\n\n*Cursos:*\n- ' + '\n- '.join(cursos))
