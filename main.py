@@ -95,8 +95,8 @@ TOKEN_SYNONYMS = {
     'grabacion': 'grabadas', 'grabaciones': 'grabadas', 'repeticion': 'grabadas', 'repeticiones': 'grabadas',
     'ondemand': 'grabadas', 'demand': 'grabadas', 'despues': 'grabadas',
     # precio
-    'costo': 'precio', 'valor': 'precio', 'arancel': 'precio', 'inversion': 'precio', 'pago': 'precio',
-    # horarios (¡sin "clase/clases" para evitar falsos positivos!)
+    'costo': 'precio', 'valor': 'precio', 'arancel': 'precio', 'inversion': 'precio',
+    # horarios
     'hora': 'horarios', 'cronograma': 'horarios',
     # modalidad / metodologia
     'metodologia': 'metodologia', 'metodo': 'metodologia',
@@ -224,10 +224,15 @@ def pick_price_column_from_text(body_lower, from_number):
             return col
     return guess_country_price_column(from_number or '')
 
-# ===== Intenciones con sinónimos =====
+# ===== Intenciones =====
 INTENTS = {
     'info': ['info','informacion','información','mas info','más info','detalles','ficha','sobre el curso'],
-    'price': ['precio','costo','valor','arancel','inversion','inversión','inscrip','cuanto','cuánto','vale','pago'],
+    'price': ['precio','costo','valor','arancel','inversion','inversión','cuanto','cuánto','vale'],  # <-- sin 'pago' ni 'inscrip'
+    'payment': [  # NUEVO: métodos/paso de pago -> derivar a asesor
+        'como pago','cómo pago','donde pago','dónde pago','metodos de pago','métodos de pago',
+        'formas de pago','medios de pago','pagar','link de pago','pago con','tarjeta','transferencia',
+        'paypal','mercado pago','mercadopago','yape','plin','nequi','pse'
+    ],
     'schedule': ['horario','horarios','hora','cronograma'],
     'modality': ['modalidad','online','virtual','en vivo','zoom','meet','videoconferencia'],
     'methodology': ['metodologia','metodología','metodo','método','como se cursa','cómo se cursa'],
@@ -246,8 +251,14 @@ def classify_intents(body_lower):
     for k, words in INTENTS.items():
         if _has_any(body_lower, words):
             flags[k] = True
+    # "precio X" sigue activando price
     if re.search(r'precio\s+[a-záéíóúñ ]{3,}', body_lower):
         flags['price'] = True
+    # patrones claros de pago
+    if re.search(r'(como|cómo|donde|dónde)\s+pago', body_lower):
+        flags['payment'] = True
+    if 'metodo de pago' in body_lower or 'método de pago' in body_lower:
+        flags['payment'] = True
     return flags
 
 # ===== FAQ por similitud =====
@@ -328,7 +339,7 @@ def course_card(row, from_number, body_lower=''):
     if precio: partes.append('💳 *Inscripción ({}):* {}'.format(price_col.replace('Inscripción ', ''), precio))
     pdf = row.get('Link PDF', '')
     if pdf: partes.append('📄 *PDF informativo:* {}'.format(pdf))
-    partes.append('Si deseas *inscribirte*, dime "*me interesa*" y te conecto con un asesor humano 🤝')
+    partes.append('Si deseas *inscribirte* o conocer *métodos de pago*, te conecto con un asesor humano 🤝\n📲 {}  ({})'.format(ADVISOR_E164, ADVISOR_WA_LINK))
     return '\n\n'.join(partes)
 
 def course_brief(row):
@@ -411,6 +422,12 @@ def send_admin_forward(user_from, user_body, course_name=None):
         print('[ERROR send_admin_forward]', e)
         return False
 
+def advisor_message():
+    return (
+        'Para *inscribirte* o conocer *métodos de pago*, te conecto con nuestro asesor humano 😊\n\n'
+        '📲 {}  ({})'
+    ).format(ADVISOR_E164, ADVISOR_WA_LINK)
+
 # ===== Sesiones =====
 def set_session_course(from_number, row):
     _sessions[from_number] = {'course': row, 't': time.time()}
@@ -454,7 +471,7 @@ def whatsapp_webhook():
         rows = fetch_sheet_rows()
         body_fold = _fold(body)
 
-        # 1) Intento de inscripción (deriva + avisa)
+        # 1) Intento de inscripción explícito
         if detect_intent_enroll(body_fold):
             row_for_forward = find_course(rows, body) or get_session_course(from_number)
             course_name = row_for_forward.get('Curso') if row_for_forward else None
@@ -467,20 +484,24 @@ def whatsapp_webhook():
             ).format(human, ADVISOR_E164, ADVISOR_WA_LINK)
             return build_twiml(reply)
 
-        # 2) ¿mencionó curso? si sí, responder
+        # 2) ¿mencionó curso?
         row_direct = find_course(rows, body) if body else None
         if row_direct:
             set_session_course(from_number, row_direct)
             intents = classify_intents(body_fold)
 
-            # Si el mensaje es genérico/“info” → Texto Principal
+            # NUEVO: si pregunta métodos de pago → derivar
+            if intents.get('payment'):
+                return build_twiml(advisor_message())
+
+            # genérico / info → Texto Principal
             generic_info = (
                 intents.get('info')
                 or not any([
                     intents.get('price'), intents.get('schedule'), intents.get('modality'),
                     intents.get('methodology'), intents.get('start'), intents.get('dates'),
                     intents.get('duration'), intents.get('pdf'), intents.get('faq'),
-                    intents.get('recordings'), intents.get('enroll')
+                    intents.get('recordings'), intents.get('enroll'), intents.get('payment')
                 ])
             )
             if generic_info:
@@ -491,14 +512,14 @@ def whatsapp_webhook():
             if specific:
                 return build_twiml('Aquí tienes:\n\n' + specific)
 
-            # Si no hubo respuesta específica, intenta FAQ y luego la ficha completa
+            # Luego FAQ, luego ficha
             faq_ans = answer_from_faq(row_direct, body_fold)
             if faq_ans:
                 return build_twiml(faq_ans)
 
             return build_twiml(course_card(row_direct, from_number, body_fold))
 
-        # 3) Sin curso aún: si es saludo o vacío -> saludo + lista
+        # 3) Saludo
         if not body or body_fold in GREETINGS or any(body_fold.startswith(g) for g in GREETINGS):
             cursos = list_courses(rows)
             if cursos:
@@ -511,8 +532,14 @@ def whatsapp_webhook():
                 msg = 'Hola, gracias por contactarnos 🙌 Soy *{}*. Aún no encuentro cursos publicados.'.format(BOT_NAME)
             return build_twiml(msg)
 
-        # 3.1 Si NO hay curso y solo hay 1 curso: soportar "info" y "precio"
+        # 3.1 Clasifica intenciones (necesario antes de FAQ global)
         intents = classify_intents(body_fold)
+
+        # Si pregunta métodos de pago sin curso → derivar igual
+        if intents.get('payment'):
+            return build_twiml(advisor_message())
+
+        # 3.2 Caso 1 curso: soportar "info" y "precio"
         if len(rows) == 1:
             only = rows[0]
             if _has_any(body_fold, ['info','informacion','información','info del curso']):
@@ -524,20 +551,22 @@ def whatsapp_webhook():
                 if specific:
                     return build_twiml('Aquí tienes:\n\n' + specific)
 
-        # 4) Sin curso, pero quizá es una pregunta general de FAQ (global)
+        # 4) FAQ global
         faq_any = answer_from_faq_global(rows, body_fold)
         if faq_any:
             return build_twiml(faq_any)
 
-        # 5) Intenciones + contexto existente (si lo hubiera)
+        # 5) Con contexto de sesión
         row_ctx = get_session_course(from_number)
         if row_ctx:
-            # PRIORIDAD: intenciones (precio/...) sobre FAQ
+            # Métodos de pago con curso → derivar
+            if intents.get('payment'):
+                return build_twiml(advisor_message())
+
             specific = answer_for_intents(row_ctx, intents, body_fold, from_number)
             if specific:
                 return build_twiml('Aquí tienes:\n\n' + specific)
 
-            # Luego FAQ, luego info
             faq_ans = answer_from_faq(row_ctx, body_fold)
             if faq_ans:
                 return build_twiml(faq_ans)
@@ -545,7 +574,6 @@ def whatsapp_webhook():
             if intents.get('info'):
                 return build_twiml(course_card(row_ctx, from_number, body_fold))
 
-            # sin match claro -> derivar
             msg = (
                 'Para esa consulta puntual, te conecto con nuestro asesor humano 😊\n\n'
                 '📲 {}  ({})\n\n'
@@ -553,8 +581,8 @@ def whatsapp_webhook():
             ).format(ADVISOR_E164, ADVISOR_WA_LINK)
             return build_twiml(msg)
 
-        # 6) Sin curso y con intención específica -> pedir curso o derivar
-        if any(v for k, v in intents.items() if k not in ['info','faq']) or intents.get('info') or intents.get('faq'):
+        # 6) Sin curso y con intención específica (no pago) → pedir curso o derivar
+        if any(v for k, v in intents.items() if k not in ['info','faq','payment']) or intents.get('info') or intents.get('faq'):
             msg = (
                 'Para darte esa info al toque, indícame primero el *nombre del curso*. '
                 'O si prefieres, te conecto con nuestro asesor humano 😊\n\n'
@@ -562,7 +590,7 @@ def whatsapp_webhook():
             ).format(ADVISOR_E164, ADVISOR_WA_LINK)
             return build_twiml(msg)
 
-        # 7) Fallback general: pedir curso
+        # 7) Fallback
         cursos = list_courses(rows)
         if cursos:
             return build_twiml('Para ayudarte mejor, dime el *nombre del curso*.\n\n*Cursos:*\n- ' + '\n- '.join(cursos))
