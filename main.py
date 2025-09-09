@@ -173,17 +173,14 @@ def list_courses(rows):
 
 # ===== Matching curso =====
 def _best_row_by_query(rows, q_fold):
-    # (1) texto del usuario dentro del nombre del curso
     for r in rows:
         name = (r.get('Curso') or '').strip()
         if name and q_fold in _fold(name):
             return r
-    # (2) nombre del curso dentro del texto del usuario
     for r in rows:
         name = (r.get('Curso') or '').strip()
         if name and _fold(name) in q_fold:
             return r
-    # (3) intersección de tokens >=3 (ignorando "curso"/"cursos")
     words = [w for w in re.findall(r'[a-z0-9áéíóúñ]+', q_fold) if len(w) >= 3 and w not in ('curso','cursos')]
     words = set(words)
     best, best_row = 0, None
@@ -197,12 +194,10 @@ def _best_row_by_query(rows, q_fold):
 
 def find_course(rows, user_text):
     q_fold = _fold(user_text)
-    # (A) alias
     for a, r in (_cache.get('alias_idx') or {}).items():
         if a and a in q_fold:
             print('[ALIAS HIT]', a, '->', r.get('Curso'))
             return r
-    # (B) "info|precio|horario|pdf|modalidad|metodologia <algo>"
     m = re.search(r'(?:info|informacion|información|precio|horarios?|pdf|modalidad|metodolog(?:ía|ia))\s+(.+)$', q_fold)
     if m:
         cand = m.group(1).strip()
@@ -210,7 +205,6 @@ def find_course(rows, user_text):
         if r:
             print('[BEST MATCH after keyword]', cand, '->', r.get('Curso'))
             return r
-    # (C) fallback general
     r = _best_row_by_query(rows, q_fold)
     if r:
         print('[BEST MATCH]', q_fold, '->', r.get('Curso'))
@@ -234,7 +228,7 @@ def pick_price_column_from_text(body_lower, from_number):
 INTENTS = {
     'info': ['info','informacion','información','mas info','más info','detalles','ficha','sobre el curso'],
     'price': ['precio','costo','valor','arancel','inversion','inversión','inscrip','cuanto','cuánto','vale','pago'],
-    'schedule': ['horario','horarios','hora','cronograma'],  # ojo: sin 'clase/clases' para evitar confusión
+    'schedule': ['horario','horarios','hora','cronograma'],
     'modality': ['modalidad','online','virtual','en vivo','zoom','meet','videoconferencia'],
     'methodology': ['metodologia','metodología','metodo','método','como se cursa','cómo se cursa'],
     'start': ['inicio','empieza','empiezan','fecha de inicio'],
@@ -243,7 +237,6 @@ INTENTS = {
     'pdf': ['pdf','brochure','informativo','dossier','folleto'],
     'faq': ['faq','preguntas','dudas','consulta','general'],
     'enroll': ['me interesa','quiero inscribirme','inscribirme','como me inscribo','cómo me inscribo','quiero anotarme','quiero matricularme'],
-    # grabadas (por si no matchea solo con FAQ)
     'recordings': ['grabada','grabadas','grabacion','grabación','grabaciones','repeticion','repetición','on demand','ondemand','ver despues','ver después','quedan grabadas'],
 }
 GREETINGS = ['hola','buenas','buenos dias','buenos días','buenas tardes','buenas noches','hey','que tal','qué tal']
@@ -259,11 +252,6 @@ def classify_intents(body_lower):
 
 # ===== FAQ por similitud =====
 def _faq_parse_blocks(faq_text):
-    """
-    Devuelve lista de (utterances[], answer) según formato:
-      Si preguntan: ... / ... / ...
-      Respuesta: ...
-    """
     if not faq_text:
         return []
     text = faq_text.strip()
@@ -278,7 +266,6 @@ def _faq_parse_blocks(faq_text):
     return blocks
 
 def _faq_tokens(s):
-    # tokens normalizados y sin stopwords
     folded = _fold(s)
     toks = [t for t in re.findall(r"[a-z0-9]+", folded) if len(t) >= 3 and t not in STOPWORDS_ES]
     toks = [_normalize_token(t) for t in toks]
@@ -291,11 +278,9 @@ def answer_from_faq(row, user_text):
     blocks = _faq_parse_blocks(faq_text)
     if not blocks:
         return None
-
     qtok = set(_faq_tokens(user_text))
     if not qtok:
         return None
-
     best_score, best_ans = 0.0, None
     for utterances, ans in blocks:
         for u in utterances:
@@ -306,19 +291,14 @@ def answer_from_faq(row, user_text):
             score = overlap / max(1, len(utok))
             if score > best_score:
                 best_score, best_ans = score, ans
-
-    # umbral flexible
     if best_score >= 0.45 or (best_score >= 0.30 and len(qtok) >= 2):
         return 'Claro 😊 ' + best_ans
     return None
 
 def answer_from_faq_global(rows, user_text):
-    """Busca la mejor respuesta FAQ entre todos los cursos (para preguntas generales sin curso aún)."""
-    best, ans = 0.0, None
     for r in rows:
         a = answer_from_faq(r, user_text)
         if a:
-            # answer_from_faq ya pasó umbral; devolvemos la primera "buena"
             return a
     return None
 
@@ -327,70 +307,42 @@ def course_card(row, from_number, body_lower=''):
     partes = []
     partes.append('Hola, gracias por contactarnos 🙌 Soy *{}* (asistente de {}).'.format(BOT_NAME, BRAND_NAME))
     partes.append('Te paso la información del curso:')
-
     titulo = row.get('Curso', '')
-    if titulo:
-        partes.append('🎓 *{}*'.format(titulo))
-
+    if titulo: partes.append('🎓 *{}*'.format(titulo))
     txt = row.get('Texto Principal', '')
-    if txt:
-        partes.append(txt)
-
+    if txt: partes.append(txt)
     fi = row.get('Fecha de Inicio', '')
-    if fi:
-        partes.append('📅 *Inicio:* {}'.format(fi))
-
+    if fi: partes.append('📅 *Inicio:* {}'.format(fi))
     fechas = row.get('Fechas de clases', '')
-    if fechas:
-        partes.append('🗓️ *Fechas de clases:* {}'.format(fechas))
-
+    if fechas: partes.append('🗓️ *Fechas de clases:* {}'.format(fechas))
     dur = row.get('Duración', '')
-    if dur:
-        partes.append('⏳ *Duración:* {}'.format(dur))
-
+    if dur: partes.append('⏳ *Duración:* {}'.format(dur))
     hor = row.get('Horarios', '')
-    if hor:
-        partes.append('🕒 *Horarios:* {}'.format(hor))
-
+    if hor: partes.append('🕒 *Horarios:* {}'.format(hor))
     modalidad = row.get('Modalidad', '') or row.get('modalidad', '')
-    if modalidad:
-        partes.append('🎥 *Modalidad:* {}'.format(modalidad))
+    if modalidad: partes.append('🎥 *Modalidad:* {}'.format(modalidad))
     metodologia = row.get('Metodología', '') or row.get('Metodologia', '') or row.get('metodología', '')
-    if metodologia:
-        partes.append('🧩 *Metodología:* {}'.format(metodologia))
-
+    if metodologia: partes.append('🧩 *Metodología:* {}'.format(metodologia))
     price_col = pick_price_column_from_text(body_lower, from_number)
     precio = row.get(price_col, '') or row.get('Inscripción Resto Países', '')
-    if precio:
-        partes.append('💳 *Inscripción ({}):* {}'.format(price_col.replace('Inscripción ', ''), precio))
-
+    if precio: partes.append('💳 *Inscripción ({}):* {}'.format(price_col.replace('Inscripción ', ''), precio))
     pdf = row.get('Link PDF', '')
-    if pdf:
-        partes.append('📄 *PDF informativo:* {}'.format(pdf))
-
+    if pdf: partes.append('📄 *PDF informativo:* {}'.format(pdf))
     partes.append('Si deseas *inscribirte*, dime "*me interesa*" y te conecto con un asesor humano 🤝')
     return '\n\n'.join(partes)
 
-# === NUEVO: respuesta breve con "Texto Principal" (y PDF si hay)
 def course_brief(row):
-    """Devuelve una respuesta breve con el Texto Principal (y PDF si existe)."""
     titulo = (row.get('Curso') or '').strip()
     txt = (row.get('Texto Principal') or '').strip()
     pdf = (row.get('Link PDF') or '').strip()
-
     partes = []
-    if titulo:
-        partes.append('🎓 *{}*'.format(titulo))
-    if txt:
-        partes.append(txt)
-    if pdf:
-        partes.append('📄 {}'.format(pdf))
-
+    if titulo: partes.append('🎓 *{}*'.format(titulo))
+    if txt: partes.append(txt)
+    if pdf: partes.append('📄 {}'.format(pdf))
     return '\n\n'.join([p for p in partes if p]) or 'No encontré información del curso.'
 
 def answer_for_intents(row, intents, body_lower, from_number):
     answers = []
-
     if intents.get('price'):
         col = pick_price_column_from_text(body_lower, from_number)
         precio = row.get(col, '') or row.get('Inscripción Resto Países', '')
@@ -398,58 +350,40 @@ def answer_for_intents(row, intents, body_lower, from_number):
             answers.append('💳 *Inscripción ({}):* {}'.format(col.replace('Inscripción ', ''), precio))
         else:
             answers.append('💳 Para darte el valor exacto, indícame tu país (ej.: "precio Bolivia").')
-
     if intents.get('schedule'):
         val = (row.get('Horarios') or '').strip()
         if val: answers.append('🕒 *Horarios:* {}'.format(val))
-
     if intents.get('modality'):
         val = (row.get('Modalidad') or row.get('modalidad') or '').strip()
         if val: answers.append('🎥 *Modalidad:* {}'.format(val))
         else:   answers.append('🎥 Modalidad en vivo por videoconferencia (clases síncronas).')
-
     if intents.get('methodology'):
         val = (row.get('Metodología') or row.get('Metodologia') or row.get('metodología') or '').strip()
         if val: answers.append('🧩 *Metodología:* {}'.format(val))
-
     if intents.get('start'):
         val = (row.get('Fecha de Inicio') or '').strip()
         if val: answers.append('📅 *Inicio:* {}'.format(val))
-
     if intents.get('dates'):
         val = (row.get('Fechas de clases') or '').strip()
         if val: answers.append('🗓️ *Fechas de clases:* {}'.format(val))
-
     if intents.get('duration'):
         val = (row.get('Duración') or '').strip()
         if val: answers.append('⏳ *Duración:* {}'.format(val))
-
     if intents.get('pdf'):
         val = (row.get('Link PDF') or '').strip()
         if val: answers.append('📄 *PDF informativo:* {}'.format(val))
-
-    # consultas sobre "grabadas" -> intentar FAQ primero (prioridad FAQ)
     if intents.get('recordings') and not answers:
         faq_ans = answer_from_faq(row, body_lower)
-        if faq_ans:
-            answers.append(faq_ans)
-        else:
-            answers.append('Sí 😊 Las clases quedan grabadas para que puedas verlas luego.')
-
+        if faq_ans: answers.append(faq_ans)
+        else:       answers.append('Sí 😊 Las clases quedan grabadas para que puedas verlas luego.')
     if intents.get('faq') and not answers:
         faq = (row.get('FAQ') or '').strip()
-        if faq:
-            answers.append('ℹ️ *FAQ:* {}'.format(faq))
-
+        if faq: answers.append('ℹ️ *FAQ:* {}'.format(faq))
     if intents.get('info') and not answers:
         answers.append(course_card(row, from_number, body_lower))
-
-    # Si aún no hay respuesta específica, intenta FAQ por similitud (prioridad total)
     if not answers:
         faq_ans = answer_from_faq(row, body_lower)
-        if faq_ans:
-            return faq_ans
-
+        if faq_ans: return faq_ans
     return '\n\n'.join([a for a in answers if a])
 
 # ===== Handoff =====
@@ -533,14 +467,13 @@ def whatsapp_webhook():
             ).format(human, ADVISOR_E164, ADVISOR_WA_LINK)
             return build_twiml(reply)
 
-        # 2) ¿mencionó curso? si sí, devolver Texto Principal si el mensaje es genérico/“info”
+        # 2) ¿mencionó curso? si sí, responder
         row_direct = find_course(rows, body) if body else None
         if row_direct:
             set_session_course(from_number, row_direct)
-
             intents = classify_intents(body_fold)
 
-            # “genérico” = el usuario escribió el nombre/alias del curso o "info"
+            # Si el mensaje es genérico/“info” → Texto Principal
             generic_info = (
                 intents.get('info')
                 or not any([
@@ -550,19 +483,18 @@ def whatsapp_webhook():
                     intents.get('recordings'), intents.get('enroll')
                 ])
             )
-
             if generic_info:
-                # Responder primero con el TEXTO PRINCIPAL del curso (y PDF si hay)
                 return build_twiml(course_brief(row_direct))
 
-            # Si no es genérico (pide precio, horarios, etc.), seguimos con tu flujo actual:
-            faq_ans = answer_from_faq(row_direct, body_fold)
-            if faq_ans:
-                return build_twiml(faq_ans)
-
+            # PRIORIDAD: intenciones (precio/horarios/...) sobre FAQ
             specific = answer_for_intents(row_direct, intents, body_fold, from_number)
             if specific:
                 return build_twiml('Aquí tienes:\n\n' + specific)
+
+            # Si no hubo respuesta específica, intenta FAQ y luego la ficha completa
+            faq_ans = answer_from_faq(row_direct, body_fold)
+            if faq_ans:
+                return build_twiml(faq_ans)
 
             return build_twiml(course_card(row_direct, from_number, body_fold))
 
@@ -579,11 +511,18 @@ def whatsapp_webhook():
                 msg = 'Hola, gracias por contactarnos 🙌 Soy *{}*. Aún no encuentro cursos publicados.'.format(BOT_NAME)
             return build_twiml(msg)
 
-        # === OPCIONAL: si solo hay 1 curso y escriben "info", enviar Texto Principal
-        if len(rows) == 1 and _has_any(body_fold, ['info','informacion','información','info del curso']):
+        # 3.1 Si NO hay curso y solo hay 1 curso: soportar "info" y "precio"
+        intents = classify_intents(body_fold)
+        if len(rows) == 1:
             only = rows[0]
-            set_session_course(from_number, only)
-            return build_twiml(course_brief(only))
+            if _has_any(body_fold, ['info','informacion','información','info del curso']):
+                set_session_course(from_number, only)
+                return build_twiml(course_brief(only))
+            if intents.get('price'):
+                set_session_course(from_number, only)
+                specific = answer_for_intents(only, intents, body_fold, from_number)
+                if specific:
+                    return build_twiml('Aquí tienes:\n\n' + specific)
 
         # 4) Sin curso, pero quizá es una pregunta general de FAQ (global)
         faq_any = answer_from_faq_global(rows, body_fold)
@@ -591,18 +530,18 @@ def whatsapp_webhook():
             return build_twiml(faq_any)
 
         # 5) Intenciones + contexto existente (si lo hubiera)
-        intents = classify_intents(body_fold)
         row_ctx = get_session_course(from_number)
-
         if row_ctx:
-            # otra vez: FAQ del curso tiene prioridad absoluta
+            # PRIORIDAD: intenciones (precio/...) sobre FAQ
+            specific = answer_for_intents(row_ctx, intents, body_fold, from_number)
+            if specific:
+                return build_twiml('Aquí tienes:\n\n' + specific)
+
+            # Luego FAQ, luego info
             faq_ans = answer_from_faq(row_ctx, body_fold)
             if faq_ans:
                 return build_twiml(faq_ans)
 
-            specific = answer_for_intents(row_ctx, intents, body_fold, from_number)
-            if specific:
-                return build_twiml('Aquí tienes:\n\n' + specific)
             if intents.get('info'):
                 return build_twiml(course_card(row_ctx, from_number, body_fold))
 
