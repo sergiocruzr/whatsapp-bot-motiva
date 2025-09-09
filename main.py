@@ -371,6 +371,23 @@ def course_card(row, from_number, body_lower=''):
     partes.append('Si deseas *inscribirte*, dime "*me interesa*" y te conecto con un asesor humano 🤝')
     return '\n\n'.join(partes)
 
+# === NUEVO: respuesta breve con "Texto Principal" (y PDF si hay)
+def course_brief(row):
+    """Devuelve una respuesta breve con el Texto Principal (y PDF si existe)."""
+    titulo = (row.get('Curso') or '').strip()
+    txt = (row.get('Texto Principal') or '').strip()
+    pdf = (row.get('Link PDF') or '').strip()
+
+    partes = []
+    if titulo:
+        partes.append('🎓 *{}*'.format(titulo))
+    if txt:
+        partes.append(txt)
+    if pdf:
+        partes.append('📄 {}'.format(pdf))
+
+    return '\n\n'.join([p for p in partes if p]) or 'No encontré información del curso.'
+
 def answer_for_intents(row, intents, body_lower, from_number):
     answers = []
 
@@ -516,19 +533,37 @@ def whatsapp_webhook():
             ).format(human, ADVISOR_E164, ADVISOR_WA_LINK)
             return build_twiml(reply)
 
-        # 2) ¿mencionó curso? si sí, prioriza FAQ del curso
+        # 2) ¿mencionó curso? si sí, devolver Texto Principal si el mensaje es genérico/“info”
         row_direct = find_course(rows, body) if body else None
         if row_direct:
             set_session_course(from_number, row_direct)
-            # FAQ del curso tiene prioridad sobre otras intenciones
+
+            intents = classify_intents(body_fold)
+
+            # “genérico” = el usuario escribió el nombre/alias del curso o "info"
+            generic_info = (
+                intents.get('info')
+                or not any([
+                    intents.get('price'), intents.get('schedule'), intents.get('modality'),
+                    intents.get('methodology'), intents.get('start'), intents.get('dates'),
+                    intents.get('duration'), intents.get('pdf'), intents.get('faq'),
+                    intents.get('recordings'), intents.get('enroll')
+                ])
+            )
+
+            if generic_info:
+                # Responder primero con el TEXTO PRINCIPAL del curso (y PDF si hay)
+                return build_twiml(course_brief(row_direct))
+
+            # Si no es genérico (pide precio, horarios, etc.), seguimos con tu flujo actual:
             faq_ans = answer_from_faq(row_direct, body_fold)
             if faq_ans:
                 return build_twiml(faq_ans)
-            # si no hay FAQ claro, pasa a intenciones
-            intents = classify_intents(body_fold)
+
             specific = answer_for_intents(row_direct, intents, body_fold, from_number)
             if specific:
                 return build_twiml('Aquí tienes:\n\n' + specific)
+
             return build_twiml(course_card(row_direct, from_number, body_fold))
 
         # 3) Sin curso aún: si es saludo o vacío -> saludo + lista
@@ -543,6 +578,12 @@ def whatsapp_webhook():
             else:
                 msg = 'Hola, gracias por contactarnos 🙌 Soy *{}*. Aún no encuentro cursos publicados.'.format(BOT_NAME)
             return build_twiml(msg)
+
+        # === OPCIONAL: si solo hay 1 curso y escriben "info", enviar Texto Principal
+        if len(rows) == 1 and _has_any(body_fold, ['info','informacion','información','info del curso']):
+            only = rows[0]
+            set_session_course(from_number, only)
+            return build_twiml(course_brief(only))
 
         # 4) Sin curso, pero quizá es una pregunta general de FAQ (global)
         faq_any = answer_from_faq_global(rows, body_fold)
