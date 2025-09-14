@@ -21,6 +21,9 @@ ADVISOR_E164 = os.getenv('ADVISOR_E164', '+59162723944')   # visible al usuario
 ADVISOR_WA_LINK = 'https://wa.me/{}'.format(ADVISOR_E164.replace('+',''))
 ADMIN_FORWARD_NUMBER = os.getenv('ADMIN_FORWARD_NUMBER', 'whatsapp:{}'.format(ADVISOR_E164))  # para Twilio REST
 
+# Audio opcional para enviar al detectar interés (fallback si no hay por curso)
+AUDIO_URL = os.getenv('AUDIO_URL', '').strip()
+
 # ===== Cache hoja y memoria simple por usuario =====
 _cache = {'rows': [], 't': 0.0, 'alias_idx': {}}
 CACHE_SECONDS = 300
@@ -73,8 +76,23 @@ def _fold(s):
     nf = unicodedata.normalize('NFD', s)
     return ''.join(c for c in nf if not unicodedata.combining(c))
 
-def build_twiml(message):
-    xml = "<?xml version='1.0' encoding='UTF-8'?><Response><Message>{}</Message></Response>".format(xml_escape(message))
+def build_twiml(message, media_url=None):
+    """
+    Si media_url está presente, enviamos texto + 1 adjunto (imagen/pdf/audio).
+    """
+    if media_url:
+        xml = (
+            "<?xml version='1.0' encoding='UTF-8'?>"
+            "<Response><Message>"
+            f"<Body>{xml_escape(message or '')}</Body>"
+            f"<Media>{xml_escape(media_url)}</Media>"
+            "</Message></Response>"
+        )
+    else:
+        xml = (
+            "<?xml version='1.0' encoding='UTF-8'?>"
+            f"<Response><Message>{xml_escape(message or '')}</Message></Response>"
+        )
     return Response(xml, mimetype='application/xml')
 
 def _has_any(text, keywords):
@@ -227,8 +245,8 @@ def pick_price_column_from_text(body_lower, from_number):
 # ===== Intenciones =====
 INTENTS = {
     'info': ['info','informacion','información','mas info','más info','detalles','ficha','sobre el curso'],
-    'price': ['precio','costo','valor','arancel','inversion','inversión','cuanto','cuánto','vale'],  # <-- sin 'pago' ni 'inscrip'
-    'payment': [  # NUEVO: métodos/paso de pago -> derivar a asesor
+    'price': ['precio','costo','valor','arancel','inversion','inversión','cuanto','cuánto','vale'],  # sin 'pago'
+    'payment': [  # métodos/paso de pago -> derivar a asesor
         'como pago','cómo pago','donde pago','dónde pago','metodos de pago','métodos de pago',
         'formas de pago','medios de pago','pagar','link de pago','pago con','tarjeta','transferencia',
         'paypal','mercado pago','mercadopago','yape','plin','nequi','pse'
@@ -338,21 +356,29 @@ def course_card(row, from_number, body_lower=''):
     precio = row.get(price_col, '') or row.get('Inscripción Resto Países', '')
     if precio: partes.append('💳 *Inscripción ({}):* {}'.format(price_col.replace('Inscripción ', ''), precio))
     pdf = row.get('Link PDF', '')
-    if pdf: partes.append('📄 *PDF informativo:* {}'.format(pdf))
+    if pdf: partes.append('📄 *PDF informativo:* {}'.format(pdf))  # aquí solo link; el adjunto se maneja en "brief/info"
     partes.append('Si deseas *inscribirte* o conocer *métodos de pago*, te conecto con un asesor humano 🤝\n📲 {}  ({})'.format(ADVISOR_E164, ADVISOR_WA_LINK))
     return '\n\n'.join(partes)
 
-def course_brief(row):
+def course_brief_text(row):
+    """
+    Solo texto breve (titulo + texto principal + (opcional) link PDF).
+    El adjunto PDF se añade en el webhook con build_twiml(media_url=pdf).
+    """
     titulo = (row.get('Curso') or '').strip()
     txt = (row.get('Texto Principal') or '').strip()
     pdf = (row.get('Link PDF') or '').strip()
     partes = []
     if titulo: partes.append('🎓 *{}*'.format(titulo))
     if txt: partes.append(txt)
-    if pdf: partes.append('📄 {}'.format(pdf))
+    if pdf: partes.append('📄 {}'.format(pdf))  # mantenemos el link como respaldo
     return '\n\n'.join([p for p in partes if p]) or 'No encontré información del curso.'
 
 def answer_for_intents(row, intents, body_lower, from_number):
+    """
+    Devuelve solo TEXTO. Los adjuntos (PDF/audio) se resuelven en el webhook
+    antes de llamar a esta función (para no romper la base).
+    """
     answers = []
     if intents.get('price'):
         col = pick_price_column_from_text(body_lower, from_number)
@@ -380,9 +406,6 @@ def answer_for_intents(row, intents, body_lower, from_number):
     if intents.get('duration'):
         val = (row.get('Duración') or '').strip()
         if val: answers.append('⏳ *Duración:* {}'.format(val))
-    if intents.get('pdf'):
-        val = (row.get('Link PDF') or '').strip()
-        if val: answers.append('📄 *PDF informativo:* {}'.format(val))
     if intents.get('recordings') and not answers:
         faq_ans = answer_from_faq(row, body_lower)
         if faq_ans: answers.append(faq_ans)
@@ -391,13 +414,14 @@ def answer_for_intents(row, intents, body_lower, from_number):
         faq = (row.get('FAQ') or '').strip()
         if faq: answers.append('ℹ️ *FAQ:* {}'.format(faq))
     if intents.get('info') and not answers:
-        answers.append(course_card(row, from_number, body_lower))
+        # En info el adjunto PDF se maneja fuera
+        answers.append(course_brief_text(row))
     if not answers:
         faq_ans = answer_from_faq(row, body_lower)
         if faq_ans: return faq_ans
     return '\n\n'.join([a for a in answers if a])
 
-# ===== Handoff =====
+# ===== Handoff / mensajes asesor =====
 def detect_intent_enroll(body_lower):
     keys = ['me interesa','quiero inscribirme','inscribirme','como me inscribo','cómo me inscribo','quiero anotarme','quiero matricularme']
     return any(k in body_lower for k in keys)
@@ -422,11 +446,70 @@ def send_admin_forward(user_from, user_body, course_name=None):
         print('[ERROR send_admin_forward]', e)
         return False
 
+def send_media_to_user(to_number, media_url, body_text=""):
+    """Envío saliente (proactivo) con MediaUrl por REST."""
+    if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_WHATSAPP_NUMBER):
+        return False
+    try:
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
+        data = {
+            "From": TWILIO_WHATSAPP_NUMBER,
+            "To": to_number,
+            "Body": body_text,
+            "MediaUrl": media_url
+        }
+        resp = requests.post(url, data=data, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN), timeout=15)
+        resp.raise_for_status()
+        return True
+    except Exception as e:
+        print('[ERROR send_media_to_user]', e)
+        return False
+
 def advisor_message():
     return (
         'Para *inscribirte* o conocer *métodos de pago*, te conecto con nuestro asesor humano 😊\n\n'
         '📲 {}  ({})'
     ).format(ADVISOR_E164, ADVISOR_WA_LINK)
+
+# ===== NUEVO: detección de audio (Twilio Media) y curso no disponible =====
+COURSE_KEYWORDS = [
+    'curso','certificacion','certificación','programa','diplomado','especializacion','especialización',
+    'nutricion','nutrición','planificacion deportiva','planificación deportiva','entrenador','futbol','fútbol',
+    'arqueros','diseño','entrenamientos','fisiologia','fisiología','ciencias del deporte','preparacion fisica','preparación física'
+]
+
+def is_audio_message(req_values):
+    try:
+        n = int(req_values.get('NumMedia', '0') or '0')
+    except:
+        n = 0
+    if n <= 0:
+        return False
+    for i in range(n):
+        ct = (req_values.get(f'MediaContentType{i}', '') or '').lower()
+        if ct.startswith('audio/'):
+            return True
+    return False
+
+def audio_reply():
+    return build_twiml(
+        'Lamentablemente no puedo responder a *audios* 🙈.\n'
+        'Si tienes una consulta específica, puedes contactarte con uno de nuestros coordinadores y te ayuda al toque:\n\n'
+        f'📲 {ADVISOR_E164}  ({ADVISOR_WA_LINK})'
+    )
+
+def unavailable_course_reply(rows):
+    cursos = list_courses(rows)
+    lista = '\n- ' + '\n- '.join(cursos) if cursos else ''
+    return build_twiml(
+        'Lamentablemente *ese curso* no lo tengo aún disponible 😔.\n'
+        'Puedes contactar a uno de nuestros coordinadores para brindarte información más precisa:\n\n'
+        f'📲 {ADVISOR_E164}  ({ADVISOR_WA_LINK})'
+        + (f'\n\n*Cursos disponibles:*\n{lista}' if cursos else '')
+    )
+
+def probably_course_request(text_fold):
+    return any(k in text_fold for k in COURSE_KEYWORDS)
 
 # ===== Sesiones =====
 def set_session_course(from_number, row):
@@ -471,6 +554,10 @@ def whatsapp_webhook():
         rows = fetch_sheet_rows()
         body_fold = _fold(body)
 
+        # 0) Si es audio entrante, responde fijo
+        if is_audio_message(request.values):
+            return audio_reply()
+
         # 1) Intento de inscripción explícito
         if detect_intent_enroll(body_fold):
             row_for_forward = find_course(rows, body) or get_session_course(from_number)
@@ -482,6 +569,16 @@ def whatsapp_webhook():
                 'Si prefieres, contáctalo ahora:\n'
                 '📲 {}  ({})'
             ).format(human, ADVISOR_E164, ADVISOR_WA_LINK)
+
+            # Enviar audio opcional (por REST) con modalidad/metodología
+            audio_url = ''
+            if row_for_forward:
+                audio_url = (row_for_forward.get('Audio') or '').strip()
+            if not audio_url:
+                audio_url = AUDIO_URL
+            if audio_url:
+                send_media_to_user(from_number, audio_url, "Te dejo un audio breve sobre modalidad y metodología 🎧")
+
             return build_twiml(reply)
 
         # 2) ¿mencionó curso?
@@ -490,11 +587,18 @@ def whatsapp_webhook():
             set_session_course(from_number, row_direct)
             intents = classify_intents(body_fold)
 
-            # NUEVO: si pregunta métodos de pago → derivar
+            # Pago → derivar
             if intents.get('payment'):
                 return build_twiml(advisor_message())
 
-            # genérico / info → Texto Principal
+            # PDF solicitado explícitamente → adjuntar
+            if intents.get('pdf'):
+                pdf_url = (row_direct.get('Link PDF') or '').strip()
+                if pdf_url:
+                    # texto + adjunto PDF
+                    return build_twiml("Te dejo el PDF informativo 📄", media_url=pdf_url)
+
+            # genérico / info → Texto Principal + adjunto PDF (si hay)
             generic_info = (
                 intents.get('info')
                 or not any([
@@ -505,21 +609,26 @@ def whatsapp_webhook():
                 ])
             )
             if generic_info:
-                return build_twiml(course_brief(row_direct))
+                text = course_brief_text(row_direct)
+                pdf_url = (row_direct.get('Link PDF') or '').strip()
+                if pdf_url:
+                    return build_twiml(text, media_url=pdf_url)
+                return build_twiml(text)
 
             # PRIORIDAD: intenciones (precio/horarios/...) sobre FAQ
             specific = answer_for_intents(row_direct, intents, body_fold, from_number)
             if specific:
                 return build_twiml('Aquí tienes:\n\n' + specific)
 
-            # Luego FAQ, luego ficha
+            # Luego FAQ, luego ficha completa
             faq_ans = answer_from_faq(row_direct, body_fold)
             if faq_ans:
                 return build_twiml(faq_ans)
 
+            # Ficha completa (en esta no adjuntamos PDF para no duplicar)
             return build_twiml(course_card(row_direct, from_number, body_fold))
 
-        # 3) Saludo
+        # 3) Saludo sin curso
         if not body or body_fold in GREETINGS or any(body_fold.startswith(g) for g in GREETINGS):
             cursos = list_courses(rows)
             if cursos:
@@ -532,24 +641,32 @@ def whatsapp_webhook():
                 msg = 'Hola, gracias por contactarnos 🙌 Soy *{}*. Aún no encuentro cursos publicados.'.format(BOT_NAME)
             return build_twiml(msg)
 
-        # 3.1 Clasifica intenciones (necesario antes de FAQ global)
+        # 3.1 Clasifica intenciones (necesario antes de otros pasos)
         intents = classify_intents(body_fold)
 
-        # Si pregunta métodos de pago sin curso → derivar igual
+        # Métodos de pago sin curso → derivar igual
         if intents.get('payment'):
             return build_twiml(advisor_message())
 
-        # 3.2 Caso 1 curso: soportar "info" y "precio"
+        # Caso 1 curso: soportar "info" y "precio"
         if len(rows) == 1:
             only = rows[0]
             if _has_any(body_fold, ['info','informacion','información','info del curso']):
                 set_session_course(from_number, only)
-                return build_twiml(course_brief(only))
+                text = course_brief_text(only)
+                pdf_url = (only.get('Link PDF') or '').strip()
+                if pdf_url:
+                    return build_twiml(text, media_url=pdf_url)
+                return build_twiml(text)
             if intents.get('price'):
                 set_session_course(from_number, only)
                 specific = answer_for_intents(only, intents, body_fold, from_number)
                 if specific:
                     return build_twiml('Aquí tienes:\n\n' + specific)
+
+        # Parece pedir un curso/tema y NO existe → “no disponible”
+        if probably_course_request(body_fold):
+            return unavailable_course_reply(rows)
 
         # 4) FAQ global
         faq_any = answer_from_faq_global(rows, body_fold)
@@ -563,6 +680,12 @@ def whatsapp_webhook():
             if intents.get('payment'):
                 return build_twiml(advisor_message())
 
+            # PDF explícito con contexto → adjuntar
+            if intents.get('pdf'):
+                pdf_url = (row_ctx.get('Link PDF') or '').strip()
+                if pdf_url:
+                    return build_twiml("Te dejo el PDF informativo 📄", media_url=pdf_url)
+
             specific = answer_for_intents(row_ctx, intents, body_fold, from_number)
             if specific:
                 return build_twiml('Aquí tienes:\n\n' + specific)
@@ -572,7 +695,11 @@ def whatsapp_webhook():
                 return build_twiml(faq_ans)
 
             if intents.get('info'):
-                return build_twiml(course_card(row_ctx, from_number, body_fold))
+                text = course_brief_text(row_ctx)
+                pdf_url = (row_ctx.get('Link PDF') or '').strip()
+                if pdf_url:
+                    return build_twiml(text, media_url=pdf_url)
+                return build_twiml(text)
 
             msg = (
                 'Para esa consulta puntual, te conecto con nuestro asesor humano 😊\n\n'
